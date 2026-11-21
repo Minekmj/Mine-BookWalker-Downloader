@@ -564,7 +564,7 @@ class ReviewMixin():
             target_p.block_type = "chapter_heading" if level == 1 else "divider"
             entry["paragraphs"] = paragraphs
             cur_plain = _clean_ruby(target_p.plain_text).strip()
-            if title and cur_plain != title and len(title) >= len(cur_plain):
+            if level == 1 and title and cur_plain != title and len(title) >= len(cur_plain):
                 target_p.spans = [TextSpan(title, target_p.is_all_bold)]
             applied += 1
             kind = "장 제목" if level == 1 else "소제목"

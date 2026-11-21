@@ -252,6 +252,8 @@ def organize_entries_to_chapters(entries: List[Dict], scene_break_style: str = "
                 current.items.append({"type": "scene_break", "text": _scene_text(text, scene_break_style), "page_no": page_no})
             elif paragraph.is_toc_entry or paragraph.block_type == "toc_entry":
                 current.items.append({"type": "toc_entry", "spans": _copy_spans(paragraph), "page_no": page_no})
+            elif paragraph.block_type == "divider":
+                current.items.append({"type": "divider", "text": text, "level": 2, "page_no": page_no})
             else:
                 toc_matched_title = _match_printed_toc(text, paragraph, para_idx, printed_toc_titles)
                 if toc_matched_title or is_chapter_heading(paragraph):
@@ -283,8 +285,6 @@ def organize_entries_to_chapters(entries: List[Dict], scene_break_style: str = "
                     last_chapter_page = page_no
                     if t_key:
                         recent_chapter_pages[t_key] = page_no
-                elif paragraph.block_type == "divider":
-                    current.items.append({"type": "divider", "text": text, "level": 2, "page_no": page_no})
                 elif is_section_heading(paragraph):
                     item_type = "divider" if len(text) <= 12 else "subheading"
                     current.items.append({"type": item_type, "text": text, "level": max(2, min(3, paragraph.heading_level or 2)), "page_no": page_no})
