@@ -9,6 +9,7 @@ from PIL import Image
 
 from core.gemini.images import _make_labeled_png_bytes
 from core.gemini.markup import (
+    _is_json_parse_error,
     _is_rate_limit_error,
     _is_transient_gemini_error,
     extract_ft_segments,
@@ -291,7 +292,7 @@ class GeminiTranscriber(ReviewMixin):
                     log_cb(
                         f"요청 오류 {[p for p, _ in pending]} (시도 {attempt}/{attempts}, temp={cur_temp}): {err_str}"
                     )
-                if not _is_transient_gemini_error(exc) and len(pending) > 1 and attempt >= 2:
+                if len(pending) > 1 and (_is_json_parse_error(exc) or (not _is_transient_gemini_error(exc) and attempt >= 2)):
                     mid = len(pending) // 2
                     l_res, l_fail = self.transcribe_batch_resilient(
                         pending[:mid], cancelled_fn, log_cb, start_temp=cur_temp, model_override=model_override, max_attempts=3

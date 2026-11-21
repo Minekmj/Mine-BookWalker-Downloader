@@ -7,12 +7,14 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from PIL import Image
 
-from core.gemini.markup import _is_rate_limit_error
+from core.gemini.markup import _is_json_parse_error, _is_rate_limit_error
 
 _HANGUL_RE = re.compile(r"[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]")
 
 
 def _is_retryable_review_error(exc: Exception) -> bool:
+    if _is_json_parse_error(exc):
+        return True
     s = str(exc).lower()
     tokens = (
         "503", "unavailable", "high demand", "overloaded",
@@ -41,6 +43,7 @@ class ReviewMixin:
         log_cb: Optional[Callable[[str], None]] = None,
         label: str = "검수",
         max_attempts: Optional[int] = None,
+        fast_fail_on_json_error: bool = False,
     ):
         attempts = max(1, int(max_attempts if max_attempts is not None else self.max_retries))
         last_exc: Optional[Exception] = None
@@ -63,6 +66,8 @@ class ReviewMixin:
                 raise
             except Exception as exc:
                 last_exc = exc
+                if fast_fail_on_json_error and _is_json_parse_error(exc):
+                    raise
                 if attempt >= attempts or not _is_retryable_review_error(exc):
                     raise
                 if _is_rate_limit_error(exc):
@@ -155,15 +160,35 @@ class ReviewMixin:
         workers = max(1, min(key_cap, int(max_concurrent), total_batches))
         done_count = 0
 
-        def run_batch(batch_idx: int, payload: List[Dict]):
+        def run_payload_resilient(payload: List[Dict], label: str) -> Dict:
             config = types.GenerateContentConfig(temperature=0.0, max_output_tokens=32768, response_mime_type="application/json", response_schema=schema)
-            data = self._generate_json_with_retry(
-                contents=prompt + json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
-                config=config,
-                cancelled_fn=cancelled_fn,
-                log_cb=log_cb,
-                label=f"내용 검수 {batch_idx + 1}/{total_batches}",
-            )
+            try:
+                data = self._generate_json_with_retry(
+                    contents=prompt + json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    config=config,
+                    cancelled_fn=cancelled_fn,
+                    log_cb=log_cb,
+                    label=label,
+                    fast_fail_on_json_error=len(payload) > 1,
+                )
+                return data if isinstance(data, dict) else {"corrections": [], "issues": []}
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                if len(payload) > 1 and (_is_json_parse_error(exc) or _is_retryable_review_error(exc)):
+                    mid = len(payload) // 2
+                    if log_cb:
+                        log_cb(f"[{label}] 문자열/변환 오류로 분할 재시도 ({len(payload)} -> {mid} + {len(payload) - mid}): {exc}")
+                    left = run_payload_resilient(payload[:mid], f"{label}-1")
+                    right = run_payload_resilient(payload[mid:], f"{label}-2")
+                    return {
+                        "corrections": list(left.get("corrections", []) or []) + list(right.get("corrections", []) or []),
+                        "issues": list(left.get("issues", []) or []) + list(right.get("issues", []) or []),
+                    }
+                raise
+
+        def run_batch(batch_idx: int, payload: List[Dict]):
+            data = run_payload_resilient(payload, f"내용 검수 {batch_idx + 1}/{total_batches}")
             return batch_idx, data
 
         ex = ThreadPoolExecutor(max_workers=workers)
@@ -305,29 +330,49 @@ class ReviewMixin:
         seen_promo = set()
         seen_demo = set()
 
-        for chunk_idx, chunk in enumerate(chunks, start=1):
-            if cancelled_fn and cancelled_fn():
-                break
+        def run_chunk_resilient(sub_chunk: List[Dict], label: str, include_toc_images: bool) -> Dict:
             payload = {
                 "printed_toc": printed_toc,
                 "current_chapters": current_chapters,
-                "candidates": chunk,
+                "candidates": sub_chunk,
             }
             config = types.GenerateContentConfig(temperature=0.0, max_output_tokens=8192, response_mime_type="application/json", response_schema=schema)
             contents = [prompt + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))]
-            if chunk_idx == 1:
+            if include_toc_images:
                 for page_no, image in (toc_images or [])[:4]:
                     buffer = io.BytesIO()
                     image.convert("RGB").save(buffer, format="JPEG", quality=82, optimize=True)
                     contents.append(f"PRINTED TOC SOURCE PAGE {page_no}")
                     contents.append(types.Part.from_bytes(data=buffer.getvalue(), mime_type="image/jpeg"))
-            data = self._generate_json_with_retry(
-                contents=contents,
-                config=config,
-                cancelled_fn=cancelled_fn,
-                log_cb=log_cb,
-                label=f"목차 후보 문맥 판별 {chunk_idx}/{len(chunks)}",
-            )
+            try:
+                data = self._generate_json_with_retry(
+                    contents=contents,
+                    config=config,
+                    cancelled_fn=cancelled_fn,
+                    log_cb=log_cb,
+                    label=label,
+                    fast_fail_on_json_error=len(sub_chunk) > 1,
+                )
+                return data if isinstance(data, dict) else {"promotions": [], "demotions": []}
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                if len(sub_chunk) > 1 and (_is_json_parse_error(exc) or _is_retryable_review_error(exc)):
+                    mid = len(sub_chunk) // 2
+                    if log_cb:
+                        log_cb(f"[{label}] 문자열/변환 오류로 분할 재시도 ({len(sub_chunk)} -> {mid} + {len(sub_chunk) - mid}): {exc}")
+                    left = run_chunk_resilient(sub_chunk[:mid], f"{label}-1", include_toc_images)
+                    right = run_chunk_resilient(sub_chunk[mid:], f"{label}-2", include_toc_images)
+                    return {
+                        "promotions": list(left.get("promotions", []) or []) + list(right.get("promotions", []) or []),
+                        "demotions": list(left.get("demotions", []) or []) + list(right.get("demotions", []) or []),
+                    }
+                raise
+
+        for chunk_idx, chunk in enumerate(chunks, start=1):
+            if cancelled_fn and cancelled_fn():
+                break
+            data = run_chunk_resilient(chunk, f"목차 후보 문맥 판별 {chunk_idx}/{len(chunks)}", chunk_idx == 1)
             if not isinstance(data, dict):
                 continue
             for item in data.get("promotions", []) or []:
@@ -398,11 +443,7 @@ class ReviewMixin:
             },
             "required": ["found"],
         }
-        payload = {
-            "missing_titles": missing_titles,
-            "pages": range_pages_meta,
-        }
-        prompt = (
+        prompt_prefix = (
             "あなたは電子書籍の欠落章見出し特定エンジンです。以下のページ範囲の中に、印刷目次には存在するが現在の章構成から欠落している章見出し（missing_titles）が含まれています。\n"
             "各ページのOCRメタ情報（pages）および添付されているページ原本画像を確認し、それぞれのmissing_titlesが実際に開始する正確なpage_noを特定してください。\n"
             "規則：\n"
@@ -410,29 +451,60 @@ class ReviewMixin:
             "2. 既存のテキストページ内の段落に既にその見出しが含まれている場合（記号やローマ数字だけが抜けていたり、本文と繋がっている場合を含む）は、そのpage_noとpara_indexを返し、need_full_reocr=falseにしてください。本文と繋がって1段落になっている場合は、そのページの見出しと本文を正しく行分けした文字列配列をparagraphsに入れてneed_full_reocr=trueにしても構いません。\n"
             "3. もしそのページが誤って挿絵（type='illustration'）に分類されてOCRがスキップされていた場合や、OCR時に見出し行が完全に抜けていた場合は、添付画像からそのページ内の章見出しと本文（ルビ除外）をすべて正確に日本語で文字起こししてparagraphs配列（1要素=1段落、先頭にchapter_title）で返し、need_full_reocr=true、para_index=0としてください。\n"
             "4. 確実に該当するページが見つかったものだけをfoundに入れて返してください。\n"
-            "DATA: " + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            "DATA: "
         )
-        config = types.GenerateContentConfig(temperature=0.0, max_output_tokens=16384, response_mime_type="application/json", response_schema=schema)
-        contents = [prompt]
-        for page_no, image in range_images or []:
-            thumb = image.convert("RGB")
-            thumb.thumbnail((1100, 1400), Image.Resampling.LANCZOS)
-            buffer = io.BytesIO()
-            thumb.save(buffer, format="JPEG", quality=82, optimize=True)
-            contents.append(f"PAGE {page_no}")
-            contents.append(types.Part.from_bytes(data=buffer.getvalue(), mime_type="image/jpeg"))
-        data = self._generate_json_with_retry(
-            contents=contents,
-            config=config,
-            cancelled_fn=cancelled_fn,
-            log_cb=log_cb,
-            label="누락 목차 구간 탐색",
-        )
+
+        def run_range_resilient(sub_meta: List[Dict], sub_imgs: List[Tuple[int, Image.Image]], label: str) -> List[Dict]:
+            payload = {
+                "missing_titles": missing_titles,
+                "pages": sub_meta,
+            }
+            config = types.GenerateContentConfig(temperature=0.0, max_output_tokens=16384, response_mime_type="application/json", response_schema=schema)
+            contents = [prompt_prefix + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))]
+            for page_no, image in sub_imgs:
+                thumb = image.convert("RGB")
+                thumb.thumbnail((1100, 1400), Image.Resampling.LANCZOS)
+                buffer = io.BytesIO()
+                thumb.save(buffer, format="JPEG", quality=82, optimize=True)
+                contents.append(f"PAGE {page_no}")
+                contents.append(types.Part.from_bytes(data=buffer.getvalue(), mime_type="image/jpeg"))
+            can_split = len(sub_imgs) > 1 or len(sub_meta) > 1
+            try:
+                data = self._generate_json_with_retry(
+                    contents=contents,
+                    config=config,
+                    cancelled_fn=cancelled_fn,
+                    log_cb=log_cb,
+                    label=label,
+                    fast_fail_on_json_error=can_split,
+                )
+                return list((data.get("found", []) if isinstance(data, dict) else []) or [])
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                if can_split and (_is_json_parse_error(exc) or _is_retryable_review_error(exc)):
+                    if len(sub_imgs) > 1:
+                        mid = len(sub_imgs) // 2
+                        l_imgs, r_imgs = sub_imgs[:mid], sub_imgs[mid:]
+                        l_pages = {p for p, _ in l_imgs}
+                        r_pages = {p for p, _ in r_imgs}
+                        l_meta = [m for m in sub_meta if int(m.get("page_no", 0)) in l_pages]
+                        r_meta = [m for m in sub_meta if int(m.get("page_no", 0)) in r_pages]
+                    else:
+                        mid = len(sub_meta) // 2
+                        l_meta, r_meta = sub_meta[:mid], sub_meta[mid:]
+                        l_imgs, r_imgs = sub_imgs, sub_imgs
+                    if log_cb:
+                        log_cb(f"[{label}] 문자열/변환 오류로 분할 재시도: {exc}")
+                    return run_range_resilient(l_meta, l_imgs, f"{label}-1") + run_range_resilient(r_meta, r_imgs, f"{label}-2")
+                raise
+
+        raw_found = run_range_resilient(range_pages_meta, list(range_images or []), "누락 목차 구간 탐색")
         has_hangul_source = any(_HANGUL_RE.search(t) for t in missing_titles)
         valid_pages = {int(p.get("page_no", 0)) for p in range_pages_meta} | {int(p) for p, _ in (range_images or [])}
         found = []
         seen_titles = set()
-        for item in (data.get("found", []) if isinstance(data, dict) else []) or []:
+        for item in raw_found:
             if not isinstance(item, dict):
                 continue
             try:
@@ -507,3 +579,104 @@ class ReviewMixin:
         )
         issues = data.get("issues", []) if isinstance(data, dict) else []
         return [str(issue).strip() for issue in issues if str(issue).strip()][:8]
+    def detect_toc_from_illustrations(
+        self,
+        illust_pages: List[Tuple[int, Image.Image]],
+        cancelled_fn: Optional[Callable[[], bool]] = None,
+        log_cb: Optional[Callable[[str], None]] = None,
+    ) -> List[Dict]:
+        if not illust_pages:
+            return []
+        from google.genai import types
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "pages": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "page_no": {"type": "INTEGER"},
+                            "is_toc": {"type": "BOOLEAN"},
+                            "toc_title": {"type": "STRING"},
+                            "entries": {"type": "ARRAY", "items": {"type": "STRING"}},
+                            "reason": {"type": "STRING"},
+                        },
+                        "required": ["page_no", "is_toc", "toc_title", "entries", "reason"],
+                    },
+                }
+            },
+            "required": ["pages"],
+        }
+        prompt = (
+            "あなたは電子書籍の挿絵ページから印刷目次（目次 / もくじ / 목차 / Contents）を判定・抽出するエンジンです。\n"
+            "添付された各ページ画像（PAGE <page_no>）を確認し、それぞれのpage_noを基準にそのページが目次ページであるか（is_toc）を判定してください。\n"
+            "規則：\n"
+            "1. 通常の挿絵・口絵・表紙・本文ページはis_toc=false、entries=[]としてください。\n"
+            "2. 背景にイラストや装飾があっても、章タイトル一覧やページ番号付きの目次表が印刷されているページはis_toc=trueとしてください。\n"
+            "3. is_toc=trueのページについては、目次見出し（例：目次、CONTENTS）をtoc_titleに、各目次項目を上から（縦書きは右から左へ）読み順にentries配列として原本の文字どおりに抽出してください。\n"
+            "4. 絶対に他言語（韓国語・英語など）へ翻訳しないでください。ルビ（ふりがな）のみ除外し、原本に印刷された文字のみをそのまま返してください。\n"
+            "5. 入力されたすべてのpage_noについて結果をpages配列で返してください。"
+        )
+
+        def run_batch_resilient(sub_batch: List[Tuple[int, Image.Image]], label: str) -> List[Dict]:
+            config = types.GenerateContentConfig(temperature=0.0, max_output_tokens=8192, response_mime_type="application/json", response_schema=schema)
+            contents = [prompt]
+            for page_no, image in sub_batch:
+                thumb = image.convert("RGB")
+                thumb.thumbnail((1100, 1400), Image.Resampling.LANCZOS)
+                buffer = io.BytesIO()
+                thumb.save(buffer, format="JPEG", quality=82, optimize=True)
+                contents.append(f"PAGE {page_no}")
+                contents.append(types.Part.from_bytes(data=buffer.getvalue(), mime_type="image/jpeg"))
+            try:
+                data = self._generate_json_with_retry(
+                    contents=contents,
+                    config=config,
+                    cancelled_fn=cancelled_fn,
+                    log_cb=log_cb,
+                    label=label,
+                    fast_fail_on_json_error=len(sub_batch) > 1,
+                )
+                return list((data.get("pages", []) if isinstance(data, dict) else []) or [])
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                if len(sub_batch) > 1 and (_is_json_parse_error(exc) or _is_retryable_review_error(exc)):
+                    mid = len(sub_batch) // 2
+                    if log_cb:
+                        log_cb(f"[{label}] 문자열/변환 오류로 분할 재시도 ({len(sub_batch)} -> {mid} + {len(sub_batch) - mid}): {exc}")
+                    return run_batch_resilient(sub_batch[:mid], f"{label}-1") + run_batch_resilient(sub_batch[mid:], f"{label}-2")
+                raise
+
+        valid_pages = {int(p) for p, _ in illust_pages}
+        batches = [illust_pages[i:i + 8] for i in range(0, len(illust_pages), 8)]
+        detected: List[Dict] = []
+        seen_pages = set()
+        for b_idx, batch in enumerate(batches, start=1):
+            if cancelled_fn and cancelled_fn():
+                break
+            rows = run_batch_resilient(batch, f"삽화 목차 판별 {b_idx}/{len(batches)}")
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    page_no = int(item.get("page_no", 0))
+                except (TypeError, ValueError):
+                    continue
+                if page_no not in valid_pages or page_no in seen_pages:
+                    continue
+                if not bool(item.get("is_toc", False)):
+                    continue
+                entries = [str(e).strip() for e in (item.get("entries", []) or []) if str(e).strip()]
+                if not entries:
+                    continue
+                seen_pages.add(page_no)
+                detected.append({
+                    "page_no": page_no,
+                    "is_toc": True,
+                    "toc_title": str(item.get("toc_title", "")).strip(),
+                    "entries": entries,
+                    "reason": str(item.get("reason", "")).strip(),
+                })
+        return detected

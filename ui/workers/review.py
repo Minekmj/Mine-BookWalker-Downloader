@@ -212,6 +212,101 @@ class ReviewMixin():
             collected.reverse()
         return " / ".join(collected)
 
+    def _detect_toc_in_illustrations(self, transcriber, ordered, chapters, epub_path, original_loader, backup_dir, design):
+        illust_pages = []
+        illust_entries_by_page = {}
+        for entry in ordered:
+            if entry.get("type") != "illustration":
+                continue
+            page_no = int(entry.get("page_no", 0))
+            if page_no <= 0:
+                continue
+            if page_no == 1 and entry.get("is_cover", False):
+                continue
+            img = original_loader(page_no)
+            if img is None:
+                img = load_entry_image(entry)
+            if img is not None:
+                illust_pages.append((page_no, img))
+                illust_entries_by_page[page_no] = entry
+        if not illust_pages:
+            return ordered, chapters
+        self.progress_stage.emit("5/5 삽화 페이지 목차 판별")
+        self.log.emit(f"삽화 이미지 목차 판별 시작: {len(illust_pages)}장")
+        try:
+            detected = transcriber.detect_toc_from_illustrations(
+                illust_pages,
+                cancelled_fn=lambda: self._cancelled,
+                log_cb=self.log.emit,
+            )
+            self._emit_token_usage(transcriber)
+        except InterruptedError:
+            raise
+        except Exception as exc:
+            self.log.emit(f"[삽화 목차 판별 실패] {exc}")
+            return ordered, chapters
+        if not detected:
+            return ordered, chapters
+        converted = 0
+        new_by_page = {}
+        for item in detected:
+            page_no = int(item.get("page_no", 0))
+            old_ent = illust_entries_by_page.get(page_no)
+            if old_ent is None:
+                continue
+            toc_title = str(item.get("toc_title", "")).strip()
+            raw_entries = [str(e).strip() for e in (item.get("entries", []) or []) if str(e).strip()]
+            if not raw_entries:
+                continue
+            paragraphs = []
+            if toc_title:
+                paragraphs.append(
+                    OCRParagraph(
+                        spans=parse_inline_bold_spans(strip_ft_tags(toc_title), True),
+                        is_heading=False,
+                        heading_level=0,
+                        block_type="toc_title",
+                        reading_order=0,
+                        is_toc_entry=False,
+                    )
+                )
+            for row_text in raw_entries:
+                clean_row = strip_ft_tags(row_text).strip()
+                if not clean_row:
+                    continue
+                paragraphs.append(
+                    OCRParagraph(
+                        spans=parse_inline_bold_spans(clean_row, False),
+                        is_scene_break=is_scene_break_text(clean_row),
+                        is_heading=False,
+                        heading_level=0,
+                        block_type="toc_entry",
+                        reading_order=len(paragraphs),
+                        is_toc_entry=True,
+                    )
+                )
+            if not paragraphs:
+                continue
+            new_by_page[page_no] = {
+                "type": "text",
+                "page_no": page_no,
+                "source_name": old_ent.get("source_name", ""),
+                "source_part_index": old_ent.get("source_part_index", 0),
+                "source_key": old_ent.get("source_key", ""),
+                "page_fingerprint": old_ent.get("page_fingerprint", ""),
+                "paragraphs": paragraphs,
+                "ocr_error": "",
+            }
+            converted += 1
+            self.log.emit(f"[삽화 목차 감지] p{page_no}: {len(raw_entries)}개 목차 항목 추출" + (f" ({item['reason']})" if item.get("reason") else ""))
+        if converted > 0:
+            ordered = [new_by_page.get(int(e.get("page_no", 0)), e) for e in ordered]
+            ordered = deduplicate_entries(sorted(ordered, key=lambda entry: int(entry.get("page_no", 0))))
+            save_ocr_backup(backup_dir, ordered)
+            _, chapters = export_light_novel(DIR_OUT, epub_path.stem, ordered, epub_path, self.opts.save_txt_folder, True, design)
+            self.log.emit(f"삽화 목차 반영 완료: {converted}페이지 변환 · 총 {len(chapters)}개 장으로 EPUB 재생성")
+        return ordered, chapters
+
     def _reconcile_toc_headings(self, transcriber, ordered, chapters, epub_path, original_loader, backup_dir, design):
         printed_toc = []
         toc_images = []
@@ -690,6 +785,10 @@ class ReviewMixin():
             self.log.emit("Gemini 최종 검수가 설정에서 비활성화되어 있습니다.")
             return
         if self.opts.gemini_review_toc or self.opts.gemini_review_headings:
+            ordered, chapters = self._detect_toc_in_illustrations(transcriber, ordered, chapters, epub_path, original_loader, backup_dir, design)
+            entries[:] = ordered
+            if self._cancelled:
+                return
             ordered, chapters = self._reconcile_toc_headings(transcriber, ordered, chapters, epub_path, original_loader, backup_dir, design)
             entries[:] = ordered
             if self._cancelled:

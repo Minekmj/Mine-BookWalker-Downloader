@@ -228,8 +228,10 @@ def organize_entries_to_chapters(entries: List[Dict], scene_break_style: str = "
                     cur_key = _plain_key(current.title)
                     cur_para_count = sum(1 for it in current.items if it.get("type") == "paragraph")
                     if t_key and cur_key == t_key and (page_no - last_chapter_page <= 3 or cur_para_count <= 5):
+                        current.items.append({"type": "paragraph", "spans": _copy_spans(paragraph), "page_no": page_no})
                         continue
                     if t_key and t_key in recent_chapter_pages and page_no - recent_chapter_pages[t_key] <= 3:
+                        current.items.append({"type": "paragraph", "spans": _copy_spans(paragraph), "page_no": page_no})
                         continue
                     if current.title and cur_para_count == 0 and len(current.items) == 1 and page_no == last_chapter_page:
                         prev_heading = current.items[0].get("text", "")

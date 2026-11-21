@@ -1,3 +1,4 @@
+import json
 import re
 from typing import List, Tuple
 
@@ -166,6 +167,26 @@ def extract_ft_segments(raw_text: str) -> List[Tuple[str, bool]]:
 def _is_rate_limit_error(exc: Exception) -> bool:
     s = str(exc).lower()
     return any(tok in s for tok in ("429", "resource_exhausted", "rate limit", "quota", "too many requests"))
+
+
+def _is_json_parse_error(exc: Exception) -> bool:
+    if isinstance(exc, json.JSONDecodeError):
+        return True
+    s = str(exc).lower()
+    return any(
+        tok in s
+        for tok in (
+            "unterminated",
+            "expecting value",
+            "expecting ','",
+            "expecting ':'",
+            "delimiter",
+            "control character",
+            "extra data",
+            "invalid \\escape",
+            "jsondecodeerror",
+        )
+    )
 
 
 def _is_transient_gemini_error(exc: Exception) -> bool:
