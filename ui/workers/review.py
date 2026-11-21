@@ -401,19 +401,6 @@ class ReviewMixin():
             return ordered, chapters
         fixed = 0
         for entry in ordered:
-            if entry.get("type") == "illustration":
-                ill_toc = entry.get("toc_entries", []) or []
-                if ill_toc:
-                    p_no = int(entry.get("page_no", 0))
-                    for rt in ill_toc:
-                        t = _clean_ruby(str(rt)).strip()
-                        if t:
-                            printed_toc.append(t)
-                    if len(toc_images) < 4 and p_no > 0:
-                        img = original_loader(p_no)
-                        if img is not None:
-                            toc_images.append((p_no, img))
-                continue
             if entry.get("type") != "text":
                 continue
             p_no = int(entry.get("page_no", 0))
@@ -455,6 +442,19 @@ class ReviewMixin():
         toc_markers = {"目次", "もくじ", "목차", "차례", "contents", "table of contents"}
 
         for entry in ordered:
+            if entry.get("type") == "illustration":
+                ill_toc = entry.get("toc_entries", []) or []
+                if ill_toc:
+                    p_no = int(entry.get("page_no", 0))
+                    for rt in ill_toc:
+                        t = _clean_ruby(str(rt)).strip()
+                        if t:
+                            printed_toc.append(t)
+                    if len(toc_images) < 4 and p_no > 0:
+                        img = original_loader(p_no)
+                        if img is not None:
+                            toc_images.append((p_no, img))
+                continue
             if entry.get("type") != "text":
                 continue
             page_no = int(entry.get("page_no", 0))
@@ -1097,6 +1097,10 @@ class ReviewMixin():
                 row["crop_size"] = list(get_image_size(entry))
                 if entry.get("chapter_title"):
                     row["chapter_title"] = entry.get("chapter_title")
+                if entry.get("toc_entries") and len(toc_images) < 4 and page_no > 0:
+                    loaded = original_loader(page_no)
+                    if loaded is not None:
+                        toc_images.append((page_no, loaded))
             else:
                 paragraphs = entry.get("paragraphs", [])
                 row["blocks"] = []
