@@ -19,6 +19,8 @@ class FinalReviewPanel(QWidget):
         ("gemini_review_paragraphs", "문단 분리·문장 연결·읽기 흐름 검수"),
         ("gemini_review_headings", "장 제목·소제목 분류 검수"),
         ("gemini_review_toc", "인쇄 목차와 실제 장 제목 대조"),
+        ("gemini_review_illust_toc", "삽화 이미지에서 목차·장 표지 후보 판별"),
+        ("epub_register_dividers_in_toc", "구분자(1, 2, 3...)를 EPUB 목차(내비게이션)에 등록"),
         ("gemini_review_duplicates", "중복 문단·페이지 내용 검수"),
         ("gemini_review_illustrations", "삽화 순서·누락·크롭 상태 검수"),
     ]
@@ -76,7 +78,8 @@ class FinalReviewPanel(QWidget):
         self.chk_final_review.blockSignals(False)
         for key, box in self.check_widgets.items():
             box.blockSignals(True)
-            box.setChecked(bool(cfg.get(key, True)))
+            default_val = False if key == "epub_register_dividers_in_toc" else True
+            box.setChecked(bool(cfg.get(key, default_val)))
             box.blockSignals(False)
         self.spin_review_passes.blockSignals(True)
         self.spin_review_passes.setValue(int(cfg.get("gemini_review_passes", 2)))

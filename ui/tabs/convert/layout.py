@@ -252,8 +252,12 @@ class LayoutMixin():
         self.chk_preview_illust_trim = QCheckBox("이 삽화 여백 제거")
         self.chk_preview_illust_trim.toggled.connect(self._on_preview_illust_trim_toggled)
         self.chk_preview_illust_trim.setVisible(False)
+        self.btn_preview_unmerge = QPushButton("합치지 않기")
+        self.btn_preview_unmerge.clicked.connect(self._on_preview_unmerge_clicked)
+        self.btn_preview_unmerge.setVisible(False)
         preview_opts.addWidget(self.chk_preview_illustration)
         preview_opts.addWidget(self.chk_preview_illust_trim)
+        preview_opts.addWidget(self.btn_preview_unmerge)
         preview_opts.addStretch()
         v.addLayout(preview_opts)
 

@@ -7,7 +7,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 from PIL import Image
 
-from core.gemini.markup import _is_json_parse_error, _is_rate_limit_error
+from core.gemini.markup import _is_json_parse_error, _is_rate_limit_error, _loads_json_relaxed
 
 _HANGUL_RE = re.compile(r"[\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F]")
 
@@ -28,6 +28,26 @@ def _is_retryable_review_error(exc: Exception) -> bool:
 
 class ReviewMixin:
 
+    def _make_config(self, types_mod, temperature: float, max_output_tokens: int, schema: dict, thinking_level: str = "MEDIUM"):
+        kwargs = {
+            "temperature": temperature,
+            "max_output_tokens": max_output_tokens,
+            "response_mime_type": "application/json",
+            "response_schema": schema,
+        }
+        model_l = (self.model_name or "").lower()
+        lvl = thinking_level.upper()
+        if hasattr(types_mod, "ThinkingConfig"):
+            try:
+                if "gemini-3" in model_l:
+                    kwargs["thinking_config"] = types_mod.ThinkingConfig(thinking_level=lvl)
+                elif "gemini-2.5" in model_l:
+                    budget = 8192 if lvl == "HIGH" else 2048
+                    kwargs["thinking_config"] = types_mod.ThinkingConfig(thinking_budget=budget)
+            except Exception:
+                pass
+        return types_mod.GenerateContentConfig(**kwargs)
+
     def _sleep_cancelable(self, seconds: float, cancelled_fn: Optional[Callable[[], bool]] = None):
         deadline = time.monotonic() + max(0.0, seconds)
         while time.monotonic() < deadline:
@@ -47,6 +67,7 @@ class ReviewMixin:
     ):
         attempts = max(1, int(max_attempts if max_attempts is not None else self.max_retries))
         last_exc: Optional[Exception] = None
+        cur_config = config
         for attempt in range(1, attempts + 1):
             if cancelled_fn and cancelled_fn():
                 raise InterruptedError("취소됨")
@@ -55,13 +76,12 @@ class ReviewMixin:
                     cancelled_fn=cancelled_fn,
                     model=self.model_name,
                     contents=contents,
-                    config=config,
+                    config=cur_config,
                 )
                 raw = (getattr(response, "text", None) or "").strip()
                 if not raw:
                     raise ValueError("Gemini 검수 응답이 비어 있습니다.")
-                match = re.search(r"\{[\s\S]*\}", raw)
-                return json.loads(match.group(0) if match else raw)
+                return _loads_json_relaxed(raw)
             except InterruptedError:
                 raise
             except Exception as exc:
@@ -70,6 +90,9 @@ class ReviewMixin:
                     raise
                 if attempt >= attempts or not _is_retryable_review_error(exc):
                     raise
+                if _is_json_parse_error(exc) and hasattr(cur_config, "model_copy"):
+                    cur_t = float(getattr(cur_config, "temperature", 0.0) or 0.0)
+                    cur_config = cur_config.model_copy(update={"temperature": min(0.8, round(cur_t + 0.25, 2))})
                 if _is_rate_limit_error(exc):
                     if log_cb:
                         log_cb(f"[{label}] 할당량 대기 후 재시도 ({attempt}/{attempts})")
@@ -88,6 +111,7 @@ class ReviewMixin:
         max_concurrent: int = 4,
         progress_cb: Optional[Callable[[int, int], None]] = None,
         log_cb: Optional[Callable[[str], None]] = None,
+        original_loader: Optional[Callable[[int], Optional[Image.Image]]] = None,
     ) -> Dict:
         from google.genai import types
         schema = {
@@ -114,15 +138,16 @@ class ReviewMixin:
             "paragraphs": "連結された段落・セリフ・見出しの改行(\\n)復元",
             "headings": "章見出しと小見出しの確認",
             "toc": "目次項目と本文見出しの一致確認",
-            "duplicates": "ページ内の明らかな重複文の確認",
+            "duplicates": "同一page_no内部のみの明らかな重複出力確認（他ページとの比較禁止）",
             "illustrations": "挿絵順序・周辺文脈の確認"
         }
         prompt = (
             "あなたは日本語電子書籍の最終校正担当者です。以下のOCR済みページテキストを校正し、修正が必要なページのみをcorrectionsに返してください。\n"
             "厳守事項（違反禁止）：\n"
-            "1. ページ冒頭や末尾が文の途中で途切れていても、それは前のページから続いているか次のページへ続いているだけの正常な書籍仕様です。絶対に文脈から続きや前の語句を補完・推測・創作・延長・前後ページ間移動しないでください。\n"
+            "0. 各page_noは完全に独立して個別に判定してください。他のページ（前後のpage_no）を気にしたり、他ページと文章を繋げたり・比較・移動・統合・重複削除することは絶対禁止です。原文の文章・記号・段落を絶対に毀損・削除・書き換えしないでください。\n"
+            "1. ページ冒頭や末尾が文の途中で途切れていても、それは前のページから続いているか次のページへ続いているだけの正常な書籍仕様です。絶対に文脈から続きや前の語句を補完・完結・推測・創作・延長・単語追加・削除・前後ページ間移動しないでください。\n"
             "2. 韓国語・英語など他の言語へ翻訳・変換することは絶対禁止です。出力はすべて日本語のみで行ってください。\n"
-            "3. 各page_noのcorrected_textは、元のそのページの文字数をほぼ完全に保ったまま、(a)抜けた改行(\\n)の挿入、および(b)1〜2文字程度の明白な文字化け誤字の最小修正のみを行ってください。\n"
+            "3. 各page_noのcorrected_textには変更箇所だけを抜粋するのではなく、必ずそのpage_noの最初から最後までの全段落・全文を省略せずに出力してください。元のそのページの文字数をほぼ完全に保ったまま、(a)抜けた改行(\\n)の挿入、および(b)1〜2文字程度の明白な文字化け誤字の最小修正のみを行ってください。場面転換記号・区切り記号・番号表記（例：(1/23)、(1)、1/23、◆、＊、※、─── 等）を「不要」と判断して削除・改変することは絶対禁止です。\n"
             "4. 最重要校正項目 — 段落の改行(\\n)抜けの修正：\n"
             "   needs_paragraph_split=trueのページや、100文字以上の長い塊になっている行を特に注意して確認してください。\n"
             "   (1) 地の文とセリフ（例：……だった。「……」または「……」……だった。）が改行なしで繋がっている場合、\n"
@@ -133,16 +158,18 @@ class ReviewMixin:
             "   文字を1文字も変えずに改行(\\n)のみを補う修正も非常に重要ですので、issuesに書くだけで終わらせず、必ずcorrectionsに修正後の全段落を入れて返してください。\n"
             "5. <ft>...</ft>タグは目次・見出し候補マーカーです。入力テキストに<ft>...</ft>または<b>...</b>が含まれている場合は、修正後もそのまま保持してください。\n"
             "6. 修正が不要なページはcorrectionsに入れないでください。\n"
+            "添付された原本ページ画像（PAGE <page_no>）がある場合は必ず画像と照合し、画像に実際に印刷されている文字・改行・記号のみに基づいて誤字と改行抜けを最小限修正してください。\n"
             "点検項目: " + " / ".join(check_names.get(item, item) for item in checks) + "。\n"
-            "issuesには構造上確認が必要な問題のみを簡潔に日本語で記録してください。\n"
+            "reasonとissuesは必ず簡潔な韓国語（한국어）で記述してください。ただしcorrected_textは必ず原本の日本語のみを出力してください。\n"
             "指定されたJSON形式のみを出力してください。DATA: "
         )
         batches: List[List[Dict]] = []
         cur_batch: List[Dict] = []
         cur_chars = 0
+        max_per_batch = 16
         for page in pages:
             p_len = len(str(page.get("text", "")))
-            if cur_batch and (len(cur_batch) >= 12 or cur_chars + p_len > 9000):
+            if cur_batch and (len(cur_batch) >= max_per_batch or cur_chars + p_len > 20000):
                 batches.append(cur_batch)
                 cur_batch = []
                 cur_chars = 0
@@ -161,10 +188,24 @@ class ReviewMixin:
         done_count = 0
 
         def run_payload_resilient(payload: List[Dict], label: str) -> Dict:
-            config = types.GenerateContentConfig(temperature=0.0, max_output_tokens=32768, response_mime_type="application/json", response_schema=schema)
+            contents = [prompt + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))]
+            has_imgs = False
+            if original_loader is not None:
+                for page in payload:
+                    p_no = int(page.get("page_no", 0))
+                    img = original_loader(p_no) if p_no > 0 else None
+                    if img is not None:
+                        thumb = img.convert("RGB")
+                        thumb.thumbnail((720, 960), Image.Resampling.LANCZOS)
+                        buf = io.BytesIO()
+                        thumb.save(buf, format="JPEG", quality=72, optimize=True)
+                        contents.append(f"PAGE {p_no}")
+                        contents.append(types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"))
+                        has_imgs = True
+            config = self._make_config(types, 1.0, 32768, schema, "HIGH" if has_imgs else "MEDIUM")
             try:
                 data = self._generate_json_with_retry(
-                    contents=prompt + json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+                    contents=contents,
                     config=config,
                     cancelled_fn=cancelled_fn,
                     log_cb=log_cb,
@@ -185,6 +226,11 @@ class ReviewMixin:
                         "corrections": list(left.get("corrections", []) or []) + list(right.get("corrections", []) or []),
                         "issues": list(left.get("issues", []) or []) + list(right.get("issues", []) or []),
                     }
+                if len(payload) == 1 and _is_json_parse_error(exc):
+                    p_no = payload[0].get("page_no", "?")
+                    if log_cb:
+                        log_cb(f"[내용 검수 건너뜀] p{p_no}: JSON 파싱 오류로 원문 유지 ({exc})")
+                    return {"corrections": [], "issues": []}
                 raise
 
         def run_batch(batch_idx: int, payload: List[Dict]):
@@ -316,11 +362,12 @@ class ReviewMixin:
             "規則：\n"
             "1. 絶対に他言語（韓国語・英語など）へ翻訳しないでください。chapter_titleは必ず原本どおりの日本語で返してください。\n"
             "2. 各候補のprev_contextとnext_contextを読み、独立した章タイトル・小見出しか判定してください。\n"
-            "   - 直前と直後の本文から独立した見出し（章や節の開始）ならpromotionsに追加してください（大見出しはheading_level=1、節見出しはheading_level=2）。\n"
+            "   - 独立した章区切り（印刷目次にある大見出し：第1章・プロローグ・エピローグ等）はheading_level=1、本文内の節番号・場面区切り記号（例：1, 2, 3, 4..., (1/23), 一, 二 等）は区分者としてheading_level=2でpromotionsに追加してください。単なる数字の「1」「2」「3」等をheading_level=1にしないでください。\n"
             "   - 印刷目次と一致するにもかかわらずcurrent_chaptersから漏れている章（装飾画像のためローマ数字 I, II, VIII, X 等が抜けて「◆ タイトル」等になっている場合を含む）は必ずpromotionsに追加し、chapter_titleには印刷目次の正式表記を使用してください。\n"
             "3. 重要：特典SS・番外編・外伝・プロローグ・エピローグ・あとがき・◆記号付き見出しなど、印刷目次に載っていなくても本文の構成上独立した章タイトルであるものは絶対にdemotionsに入れないでください。\n"
             "4. demotionsには、prev_contextやnext_contextの文・会話の途中に埋め込まれているだけの通常の本文が誤ってis_chapter_now=trueまたはis_section_now=trueになっている場合のみを入れてください。\n"
             "5. すでにis_chapter_now=trueかつ表記も正しい章はpromotionsに重複して入れる必要はありません。\n"
+            "6. reasonは必ず韓国語（한국어）で記述してください。\n"
             "DATA: "
         )
         chunks = [candidates[i:i + 50] for i in range(0, len(candidates), 50)]
@@ -336,7 +383,7 @@ class ReviewMixin:
                 "current_chapters": current_chapters,
                 "candidates": sub_chunk,
             }
-            config = types.GenerateContentConfig(temperature=0.0, max_output_tokens=8192, response_mime_type="application/json", response_schema=schema)
+            config = self._make_config(types, 0.0, 8192, schema, "HIGH" if (include_toc_images and toc_images) else "MEDIUM")
             contents = [prompt + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))]
             if include_toc_images:
                 for page_no, image in (toc_images or [])[:4]:
@@ -450,7 +497,7 @@ class ReviewMixin:
             "1. 絶対に他言語（韓国語・英語など）へ翻訳しないでください。chapter_titleおよびparagraphsは必ず原本の日本語のみを返してください。\n"
             "2. 既存のテキストページ内の段落に既にその見出しが含まれている場合（記号やローマ数字だけが抜けていたり、本文と繋がっている場合を含む）は、そのpage_noとpara_indexを返し、need_full_reocr=falseにしてください。本文と繋がって1段落になっている場合は、そのページの見出しと本文を正しく行分けした文字列配列をparagraphsに入れてneed_full_reocr=trueにしても構いません。\n"
             "3. もしそのページが誤って挿絵（type='illustration'）に分類されてOCRがスキップされていた場合や、OCR時に見出し行が完全に抜けていた場合は、添付画像からそのページ内の章見出しと本文（ルビ除外）をすべて正確に日本語で文字起こししてparagraphs配列（1要素=1段落、先頭にchapter_title）で返し、need_full_reocr=true、para_index=0としてください。\n"
-            "4. 確実に該当するページが見つかったものだけをfoundに入れて返してください。\n"
+            "4. 添付画像またはOCRテキスト上にmissing_titlesの章タイトル文字列が実際に印刷・描画されているページだけをfoundに入れてください。(3/43)のような番号表記や物語の文脈だけから章の開始を推測・捏造することは絶対禁止です。該当ページがなければfoundは空配列[]を返してください。reasonは必ず韓国語（한국어）で記述してください。\n"
             "DATA: "
         )
 
@@ -459,7 +506,7 @@ class ReviewMixin:
                 "missing_titles": missing_titles,
                 "pages": sub_meta,
             }
-            config = types.GenerateContentConfig(temperature=0.0, max_output_tokens=16384, response_mime_type="application/json", response_schema=schema)
+            config = self._make_config(types, 0.0, 16384, schema, "HIGH" if sub_imgs else "MEDIUM")
             contents = [prompt_prefix + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))]
             for page_no, image in sub_imgs:
                 thumb = image.convert("RGB")
@@ -540,7 +587,7 @@ class ReviewMixin:
         toc_images: Optional[List[Tuple[int, Image.Image]]] = None,
         cancelled_fn: Optional[Callable[[], bool]] = None,
         log_cb: Optional[Callable[[str], None]] = None,
-    ) -> List[str]:
+    ) -> Dict:
         from google.genai import types
         payload = {
             "source_pages": page_summaries,
@@ -548,17 +595,58 @@ class ReviewMixin:
             "saved_epub": epub_structure,
         }
         prompt = (
-            "完成した電子書籍の構造のみを検査するチェッカーです。提供されたJSONおよび添付画像のみを使用し、再OCRや文章の修正・挿絵分類の変更・座標返却は行わないでください。\n"
-            "検査項目は4点です。(1) source_pagesのページ番号とillustration_orderが原本順になっているか、(2) ページ・本文・目次・章見出し・小見出しに明らかな重複や順序逆転がないか、(3) 印刷目次の項目がchaptersの実際のタイトルと一致し、保存されたEPUBのnavigationに対応リンクが存在するか、(4) saved_epubのspineとnavigationの順序がchaptersの順序と一致しているか確認してください。\n"
+            "完成した電子書籍の構造を検査し、修正可能な構造エラーがあればfixesに修正指示を出力する構造監査エンジンです。\n"
+            "検査項目は6点です。(1) source_pagesのページ番号とillustration_orderが原本順になっているか、(2) ページ・本文・目次・章見出し・小見出しに明らかな重複や順序逆転がないか、(3) 印刷目次の項目がchaptersの実際のタイトルと一致し、保存されたEPUBのnavigationに対応リンクが存在するか、(4) saved_epubのspineとnavigationの順序がchaptersの順序と一致しているか、(5) 印刷目次ページが誤って複数の空章（本文段落なしの連続見出し）に分割されていないか、(6) 挿絵由来の章タイトルが原本ページ順どおりに配置され前後本文の文脈と自然につながっているか確認してください。\n"
+            "修正指示ルール（fixes）：\n"
+            "- 印刷目次に存在しない単なる数字だけの見出し（例：「2」「3」「4」「11」「12」等）や誤って大見出しになっている段落が独立した章としてnavigationに登録されている場合は、demote_headingsにpage_no・text・to_section（節見出しに落とすならtrue、通常段落に戻すならfalse）・reasonを入れてください。\n"
+            "- 印刷目次と表記が異なる章タイトルや重複章タイトルがある場合は、rename_chaptersにpage_no・old_title・new_title・reasonを入れてください。\n"
             "重要例外ルール：\n"
-            "- chaptersの中でin_navigation=falseの項目（titleが空の表紙・カラー口絵・前付けチャプター等）はspineに存在してもnavigationには登録されないのが正常なEPUB仕様です。これを順序不一致エラーとして報告しないでください。\n"
-            "- 短い繰り返しフレーズ、区切り線、同じ登場人物名、意図的な繰り返し見出しや装飾挿絵は重複エラーではありません。テキストページの重複は同一のpage_fingerprintまたは80文字以上のocr_hashが一致する場合のみ報告してください。ページ番号の飛び番だけを理由にエラーとしないでください。\n"
-            "添付された目次画像は印刷目次の実表記とOCRテキストの照合のみに使用してください。添付された挿絵比較シートでは同じ枠内のORIGINALとCROPPEDを比較し、主要な被写体が明らかに切断されたり主要部分が欠損している場合のみ報告してください。単なる余白の違いは問題としないでください。\n"
-            "根拠が明確な問題のみを日本語で最大8件報告してください。曖昧な場合は報告しないでください。結果は{\"issues\":[\"...\"]}形式のJSONのみを返し、問題がなければ空配列を返してください。DATA: "
+            "- chaptersの中でin_navigation=falseの項目（titleが空の表紙・カラー口絵・前付けチャプター等）はspineに存在してもnavigationには登録されないのが正常なEPUB仕様です。\n"
+            "- 親章のnavigation内にサブセクション（h2/h3）がネストされるのは正常なEPUB3仕様です。\n"
+            "- 短い繰り返しフレーズ、区切り線、同じ登場人物名、意図的な繰り返し見出しや装飾挿絵は重複エラーではありません。テキストページの重複は同一のpage_fingerprintまたは80文字以上のocr_hashが一致する場合のみ報告してください。\n"
+            "根拠が明確な問題およびreasonは必ず韓国語（한국어）で記述してください（issuesは最大8件）。DATA: "
             + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         )
-        schema = {"type": "OBJECT", "properties": {"issues": {"type": "ARRAY", "items": {"type": "STRING"}}}, "required": ["issues"]}
-        config = types.GenerateContentConfig(temperature=0.0, max_output_tokens=1024, response_mime_type="application/json", response_schema=schema)
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "issues": {"type": "ARRAY", "items": {"type": "STRING"}},
+                "fixes": {
+                    "type": "OBJECT",
+                    "properties": {
+                        "demote_headings": {
+                            "type": "ARRAY",
+                            "items": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "page_no": {"type": "INTEGER"},
+                                    "text": {"type": "STRING"},
+                                    "to_section": {"type": "BOOLEAN"},
+                                    "reason": {"type": "STRING"},
+                                },
+                                "required": ["page_no", "text", "to_section", "reason"],
+                            },
+                        },
+                        "rename_chapters": {
+                            "type": "ARRAY",
+                            "items": {
+                                "type": "OBJECT",
+                                "properties": {
+                                    "page_no": {"type": "INTEGER"},
+                                    "old_title": {"type": "STRING"},
+                                    "new_title": {"type": "STRING"},
+                                    "reason": {"type": "STRING"},
+                                },
+                                "required": ["page_no", "old_title", "new_title", "reason"],
+                            },
+                        },
+                    },
+                    "required": ["demote_headings", "rename_chapters"],
+                },
+            },
+            "required": ["issues", "fixes"],
+        }
+        config = self._make_config(types, 0.0, 8192, schema, "HIGH")
         contents = [prompt]
         for page_no, image in toc_images or []:
             buffer = io.BytesIO()
@@ -577,13 +665,23 @@ class ReviewMixin:
             log_cb=log_cb,
             label="최종 구조 검수",
         )
-        issues = data.get("issues", []) if isinstance(data, dict) else []
-        return [str(issue).strip() for issue in issues if str(issue).strip()][:8]
+        if not isinstance(data, dict):
+            return {"issues": [], "fixes": {"demote_headings": [], "rename_chapters": []}}
+        issues = [str(issue).strip() for issue in (data.get("issues", []) or []) if str(issue).strip()][:8]
+        fixes = data.get("fixes", {}) if isinstance(data.get("fixes"), dict) else {}
+        return {
+            "issues": issues,
+            "fixes": {
+                "demote_headings": list(fixes.get("demote_headings", []) or []),
+                "rename_chapters": list(fixes.get("rename_chapters", []) or []),
+            },
+        }
     def detect_toc_from_illustrations(
         self,
         illust_pages: List[Tuple[int, Image.Image]],
         cancelled_fn: Optional[Callable[[], bool]] = None,
         log_cb: Optional[Callable[[str], None]] = None,
+        progress_cb: Optional[Callable[[int, int], None]] = None,
     ) -> List[Dict]:
         if not illust_pages:
             return []
@@ -597,30 +695,30 @@ class ReviewMixin:
                         "type": "OBJECT",
                         "properties": {
                             "page_no": {"type": "INTEGER"},
-                            "is_toc": {"type": "BOOLEAN"},
-                            "toc_title": {"type": "STRING"},
+                            "kind": {"type": "STRING"},
+                            "title": {"type": "STRING"},
                             "entries": {"type": "ARRAY", "items": {"type": "STRING"}},
                             "reason": {"type": "STRING"},
                         },
-                        "required": ["page_no", "is_toc", "toc_title", "entries", "reason"],
+                        "required": ["page_no", "kind", "title", "entries", "reason"],
                     },
                 }
             },
             "required": ["pages"],
         }
         prompt = (
-            "あなたは電子書籍の挿絵ページから印刷目次（目次 / もくじ / 목차 / Contents）を判定・抽出するエンジンです。\n"
-            "添付された各ページ画像（PAGE <page_no>）を確認し、それぞれのpage_noを基準にそのページが目次ページであるか（is_toc）を判定してください。\n"
+            "あなたは電子書籍の挿絵ページから目次ページおよび章タイトル扉絵を判定・抽出するエンジンです。\n"
+            "添付された各挿絵画像（PAGE <page_no>）を確認し、それぞれのpage_noについてkindを判定してください。\n"
             "規則：\n"
-            "1. 通常の挿絵・口絵・表紙・本文ページはis_toc=false、entries=[]としてください。\n"
-            "2. 背景にイラストや装飾があっても、章タイトル一覧やページ番号付きの目次表が印刷されているページはis_toc=trueとしてください。\n"
-            "3. is_toc=trueのページについては、目次見出し（例：目次、CONTENTS）をtoc_titleに、各目次項目を上から（縦書きは右から左へ）読み順にentries配列として原本の文字どおりに抽出してください。\n"
-            "4. 絶対に他言語（韓国語・英語など）へ翻訳しないでください。ルビ（ふりがな）のみ除外し、原本に印刷された文字のみをそのまま返してください。\n"
-            "5. 入力されたすべてのpage_noについて結果をpages配列で返してください。"
+            "1. 通常の挿絵・口絵・表紙など、目次でも章見出しでもない画像はkind=\"none\", title=\"\", entries=[]としてください。\n"
+            "2. 章タイトル一覧（目次表）が印刷されたページはkind=\"toc_list\"、titleに目次見出し（例：目次）、entriesに各目次項目を上から（縦書きは右から左へ）読み順で入れてください。ページ番号がなくても目次一覧ならtoc_listです。\n"
+            "3. 背景やイラストとともに「プロローグ」「第1章 ○○」「I ◆ ○○」「エピローグ」「あとがき」「番外編」など単一の章・節タイトルが描かれている扉絵はkind=\"chapter_title\"、titleにその章タイトルのみを原本の文字どおりに入れ、entries=[]としてください。\n"
+            "4. 絶対に他言語（韓国語・英語など）へ翻訳しないでください。ルビ（ふりがな）のみ除外し、原本に印刷された文字のみを返してください。\n"
+            "5. 入力されたすべてのpage_noについて結果をpages配列で返してください。reasonは必ず韓国語（한국어）で記述してください。"
         )
 
         def run_batch_resilient(sub_batch: List[Tuple[int, Image.Image]], label: str) -> List[Dict]:
-            config = types.GenerateContentConfig(temperature=0.0, max_output_tokens=8192, response_mime_type="application/json", response_schema=schema)
+            config = self._make_config(types, 0.0, 8192, schema, "HIGH")
             contents = [prompt]
             for page_no, image in sub_batch:
                 thumb = image.convert("RGB")
@@ -650,13 +748,15 @@ class ReviewMixin:
                 raise
 
         valid_pages = {int(p) for p, _ in illust_pages}
-        batches = [illust_pages[i:i + 8] for i in range(0, len(illust_pages), 8)]
+        batches = [illust_pages[i:i + 5] for i in range(0, len(illust_pages), 5)]
         detected: List[Dict] = []
         seen_pages = set()
         for b_idx, batch in enumerate(batches, start=1):
             if cancelled_fn and cancelled_fn():
                 break
-            rows = run_batch_resilient(batch, f"삽화 목차 판별 {b_idx}/{len(batches)}")
+            rows = run_batch_resilient(batch, f"삽화 목차 후보 판별 {b_idx}/{len(batches)}")
+            if progress_cb:
+                progress_cb(b_idx, len(batches))
             for item in rows:
                 if not isinstance(item, dict):
                     continue
@@ -666,17 +766,87 @@ class ReviewMixin:
                     continue
                 if page_no not in valid_pages or page_no in seen_pages:
                     continue
-                if not bool(item.get("is_toc", False)):
-                    continue
+                kind = str(item.get("kind", "none") or "none").strip().lower()
+                title = str(item.get("title", "")).strip()
                 entries = [str(e).strip() for e in (item.get("entries", []) or []) if str(e).strip()]
-                if not entries:
-                    continue
-                seen_pages.add(page_no)
-                detected.append({
-                    "page_no": page_no,
-                    "is_toc": True,
-                    "toc_title": str(item.get("toc_title", "")).strip(),
-                    "entries": entries,
-                    "reason": str(item.get("reason", "")).strip(),
-                })
+                if kind == "toc_list" and entries:
+                    seen_pages.add(page_no)
+                    detected.append({
+                        "page_no": page_no,
+                        "kind": "toc_list",
+                        "toc_title": title or "目次",
+                        "entries": entries,
+                        "reason": str(item.get("reason", "")).strip(),
+                    })
+                elif kind == "chapter_title" and title:
+                    seen_pages.add(page_no)
+                    detected.append({
+                        "page_no": page_no,
+                        "kind": "chapter_title",
+                        "title": title,
+                        "entries": [],
+                        "reason": str(item.get("reason", "")).strip(),
+                    })
         return detected
+
+    def validate_illustration_chapter_titles(
+        self,
+        candidates: List[Dict],
+        existing_chapters: List[Dict],
+        cancelled_fn: Optional[Callable[[], bool]] = None,
+        log_cb: Optional[Callable[[str], None]] = None,
+    ) -> List[Dict]:
+        if not candidates:
+            return []
+        from google.genai import types
+        schema = {
+            "type": "OBJECT",
+            "properties": {
+                "approved": {
+                    "type": "ARRAY",
+                    "items": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "page_no": {"type": "INTEGER"},
+                            "chapter_title": {"type": "STRING"},
+                            "reason": {"type": "STRING"},
+                        },
+                        "required": ["page_no", "chapter_title", "reason"],
+                    },
+                }
+            },
+            "required": ["approved"],
+        }
+        prompt = (
+            "あなたは電子書籍の挿絵由来・目次候補の文脈判定エンジンです。\n"
+            "各候補（candidates）は挿絵画像から抽出された章タイトル候補（page_no, title）です。直前の本文（prev_context）と直後の本文（next_context）、および既存の章一覧（existing_chapters）を確認し、その挿絵位置で新しい章として分割するのが自然かつ妥当か判定してください。\n"
+            "規則：\n"
+            "1. 前後の文脈（prev_contextの終わりとnext_contextの始まり）が場面転換や新章開始として自然であればapprovedに含めてください。\n"
+            "2. 会話の途中や一文の途中など明らかに不自然な挿絵キャプションや装飾文字は除外してください。\n"
+            "3. chapter_titleは原本どおりの日本語のみを返し、絶対に翻訳しないでください。reasonは必ず韓国語（한국어）で記述してください。\n"
+            "DATA: "
+        )
+        payload = {"existing_chapters": existing_chapters, "candidates": candidates}
+        config = self._make_config(types, 0.0, 4096, schema, "MEDIUM")
+        data = self._generate_json_with_retry(
+            contents=prompt + json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            config=config,
+            cancelled_fn=cancelled_fn,
+            log_cb=log_cb,
+            label="삽화 목차 후보 문맥 검증",
+        )
+        valid_pages = {int(c.get("page_no", 0)) for c in candidates}
+        approved = []
+        seen = set()
+        for item in (data.get("approved", []) if isinstance(data, dict) else []) or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                p_no = int(item.get("page_no", 0))
+            except (TypeError, ValueError):
+                continue
+            title = str(item.get("chapter_title", "")).strip()
+            if p_no in valid_pages and p_no not in seen and title:
+                seen.add(p_no)
+                approved.append({"page_no": p_no, "chapter_title": title, "reason": str(item.get("reason", "")).strip()})
+        return approved

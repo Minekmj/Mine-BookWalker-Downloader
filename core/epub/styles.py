@@ -13,6 +13,7 @@ class EpubDesignConfig:
     body_margin_em: float = 1.2
     heading_style: str = "underline"
     scene_break_style: str = "stars"
+    register_dividers_in_toc: bool = False
     chapter_page_break: bool = True
     illust_page_break: bool = True
     cover_enabled: bool = True
@@ -31,6 +32,7 @@ class EpubDesignConfig:
             body_margin_em=float(d.get("epub_body_margin_em", 1.2)),
             heading_style=str(d.get("epub_heading_style", "underline")),
             scene_break_style=str(d.get("scene_break_style", "stars")),
+            register_dividers_in_toc=bool(d.get("epub_register_dividers_in_toc", False)),
             chapter_page_break=bool(d.get("epub_chapter_page_break", True)),
             illust_page_break=bool(d.get("epub_illust_page_break", True)),
             cover_enabled=bool(d.get("epub_cover_enabled", True)),
@@ -115,6 +117,7 @@ def generate_epub_css(cfg: EpubDesignConfig) -> str:
         ".cover-wrap img { max-width: 100%; max-height: 98vh; width: auto; height: auto; }\n"
         f"{heading_css}"
         "h2.section-title { font-size: 1.18em; font-weight: bold; margin: 1.5em 0 0.8em 0; }\n"
+        ".section-divider { text-align: center; font-weight: bold; font-size: 1.1em; margin: 1.6em 0 1.2em 0; text-indent: 0; }\n"
         "h3.section-title { font-size: 1.05em; font-weight: bold; margin: 1.2em 0 0.6em 0; }\n"
         "p {\n"
         f"  margin: {cfg.para_margin_em:.2f}em 0;\n"

@@ -5,11 +5,13 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple, Union
 
+import numpy as np
 from PIL import Image
 
 from core.gemini.images import _make_labeled_png_bytes
 from core.gemini.markup import (
     _is_json_parse_error,
+    _loads_json_relaxed,
     _is_rate_limit_error,
     _is_transient_gemini_error,
     extract_ft_segments,
@@ -121,8 +123,7 @@ class GeminiTranscriber(ReviewMixin):
         if not raw_text:
             raise ValueError("Gemini 응답이 비어 있습니다 (안전 필터 또는 빈 출력).")
 
-        m = re.search(r"\{[\s\S]*\}", raw_text)
-        data = json.loads(m.group(0) if m else raw_text)
+        data = _loads_json_relaxed(raw_text)
         pages_raw = data.get("pages", [])
 
         seq_to_pno = {seq_idx: p_no for seq_idx, (p_no, _) in enumerate(batch, start=1)}
@@ -245,6 +246,67 @@ class GeminiTranscriber(ReviewMixin):
 
         return parsed_map
 
+    @staticmethod
+    def _find_safe_split_pos(img: Image.Image, vertical_text: bool) -> Optional[int]:
+        arr = np.asarray(img.convert("L"))
+        h, w = arr.shape
+        if vertical_text:
+            if w < 120:
+                return None
+            y0, y1 = int(h * 0.02), max(int(h * 0.02) + 1, int(h * 0.98))
+            band = arr[y0:y1, :]
+            ink = (band < 230).sum(axis=0)
+            lo, hi = int(w * 0.25), int(w * 0.75)
+            tol = max(1, int(band.shape[0] * 0.002))
+            center = w / 2.0
+            span = hi - lo
+        else:
+            if h < 120:
+                return None
+            x0, x1 = int(w * 0.02), max(int(w * 0.02) + 1, int(w * 0.98))
+            band = arr[:, x0:x1]
+            ink = (band < 230).sum(axis=1)
+            lo, hi = int(h * 0.25), int(h * 0.75)
+            tol = max(1, int(band.shape[1] * 0.002))
+            center = h / 2.0
+            span = hi - lo
+        if span <= 4:
+            return None
+        gaps = []
+        start = None
+        for idx in range(lo, hi):
+            if ink[idx] <= tol:
+                if start is None:
+                    start = idx
+            else:
+                if start is not None:
+                    gaps.append((start, idx - 1))
+                    start = None
+        if start is not None:
+            gaps.append((start, hi - 1))
+        if gaps:
+            best = min(gaps, key=lambda g: abs((g[0] + g[1]) / 2.0 - center) - (g[1] - g[0] + 1) * 0.25)
+            return int((best[0] + best[1]) // 2)
+        sub = ink[lo:hi]
+        min_idx = int(np.argmin(sub))
+        band_len = band.shape[0] if vertical_text else band.shape[1]
+        if sub[min_idx] <= max(2, int(band_len * 0.03)):
+            return lo + min_idx
+        return None
+
+    @classmethod
+    def _split_page_image_safe(cls, img: Image.Image, vertical_text: bool) -> Optional[Tuple[Image.Image, Image.Image]]:
+        pos = cls._find_safe_split_pos(img, vertical_text)
+        if pos is None:
+            return None
+        if vertical_text:
+            right_img = img.crop((pos, 0, img.width, img.height))
+            left_img = img.crop((0, 0, pos, img.height))
+            return right_img, left_img
+        top_img = img.crop((0, 0, img.width, pos))
+        bottom_img = img.crop((0, pos, img.width, img.height))
+        return top_img, bottom_img
+
     def transcribe_batch_resilient(
         self,
         batch: List[Tuple[int, ImageOrLoader]],
@@ -253,6 +315,7 @@ class GeminiTranscriber(ReviewMixin):
         start_temp: Optional[float] = None,
         model_override: Optional[str] = None,
         max_attempts: Optional[int] = None,
+        split_depth: int = 0,
     ) -> Tuple[Dict[int, GeminiPageResult], Dict[int, str]]:
 
         results: Dict[int, GeminiPageResult] = {}
@@ -265,7 +328,8 @@ class GeminiTranscriber(ReviewMixin):
             if not pending or (cancelled_fn and cancelled_fn()):
                 break
 
-            cur_temp = round(max(0.0, min(1.5, base_temp + self.temp_step * (attempt - 1))), 4)
+            step = self.temp_step if self.temp_step > 0 else 0.2
+            cur_temp = round(max(0.0, min(1.5, base_temp + step * (attempt - 1))), 4)
             try:
                 got = self._call_batch_once(
                     pending,
@@ -305,6 +369,47 @@ class GeminiTranscriber(ReviewMixin):
                     failures.update(l_fail)
                     failures.update(r_fail)
                     return results, {p: f for p, f in failures.items() if p not in results}
+                if len(pending) == 1 and split_depth < 3 and (_is_json_parse_error(exc) or (not _is_transient_gemini_error(exc) and attempt >= 2)):
+                    p_no, img_or_fn = pending[0]
+                    raw_img = img_or_fn() if callable(img_or_fn) else img_or_fn
+                    halves = self._split_page_image_safe(raw_img, vertical_text=(self.orientation == "vertical"))
+                    if halves is not None:
+                        first_img, second_img = halves
+                        if log_cb:
+                            log_cb(f"p{p_no} JSON/반복 오류로 여백 기준 반분할 재시도 (깊이 {split_depth + 1})")
+                        res1, fail1 = self.transcribe_batch_resilient(
+                            [(p_no, first_img)],
+                            cancelled_fn,
+                            log_cb,
+                            start_temp=cur_temp,
+                            model_override=model_override,
+                            max_attempts=2,
+                            split_depth=split_depth + 1,
+                        )
+                        res2, fail2 = self.transcribe_batch_resilient(
+                            [(p_no, second_img)],
+                            cancelled_fn,
+                            log_cb,
+                            start_temp=cur_temp,
+                            model_override=model_override,
+                            max_attempts=2,
+                            split_depth=split_depth + 1,
+                        )
+                        if p_no in res1 and p_no in res2:
+                            combined_paras = list(res1[p_no].paragraphs) + list(res2[p_no].paragraphs)
+                            for r_idx, para_obj in enumerate(combined_paras):
+                                para_obj.reading_order = r_idx
+                            return {
+                                p_no: GeminiPageResult(
+                                    page_no=p_no,
+                                    paragraphs=combined_paras,
+                                    used_temp=res2[p_no].used_temp,
+                                    used_model=res2[p_no].used_model,
+                                    ink_ratio=compute_page_ink_ratio(raw_img),
+                                )
+                            }, {}
+                        err_msg = fail1.get(p_no) or fail2.get(p_no) or err_str
+                        return {}, {p_no: err_msg}
                 if _is_rate_limit_error(exc):
                     self._sleep_cancelable(0.5, cancelled_fn=cancelled_fn)
 
@@ -338,6 +443,16 @@ class GeminiTranscriber(ReviewMixin):
             }
             while pending:
                 if cancelled_fn and cancelled_fn():
+                    for fut in list(pending):
+                        if fut.done() and not fut.cancelled():
+                            try:
+                                res_map, fail_map = fut.result()
+                                all_results.update(res_map)
+                                all_failures.update(fail_map)
+                                if on_batch_done and res_map:
+                                    on_batch_done(res_map)
+                            except Exception:
+                                pass
                     ex.shutdown(wait=False, cancel_futures=True)
                     raise InterruptedError("취소됨")
                 done, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)

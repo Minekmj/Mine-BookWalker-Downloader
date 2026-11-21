@@ -1,3 +1,4 @@
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from difflib import SequenceMatcher
 import hashlib
 import re
@@ -107,54 +108,72 @@ class ReviewMixin():
                 retry_result = result_map.get(page_no)
                 if retry_result and retry_result.paragraphs:
                     retry_text = self._paragraphs_to_editable_text(retry_result.paragraphs)
-            decision = {"action": policy}
-            if policy == "ask":
-                decision = self._ask_user_review({
-                    "page_no": page_no,
-                    "source_name": source_name,
-                    "image": target_img,
-                    "reason": error,
-                    "actual_chars": record.get("char_count", 0),
-                    "expected_chars": record.get("expected_chars", 0),
-                    "z_score": record.get("z_score", 0),
-                    "current_text": current_text,
-                    "current_model": self.opts.gemini_model,
-                    "current_temp": cur_page_temp,
-                    "retry_candidate_text": retry_text,
-                })
-            action = decision.get("action", "keep_edited")
-            if action == "cancel":
-                self._cancelled = True
-                return
-            if action == "retry_gemini":
-                retry_temp = float(decision.get("temperature", cur_page_temp))
-                result_map, retry_failures = transcriber.transcribe_batch_resilient([(page_no, target_img)], cancelled_fn=lambda: self._cancelled, log_cb=self.log.emit, start_temp=retry_temp, model_override=decision.get("model") or self.opts.gemini_model, max_attempts=1)
-                self._emit_token_usage(transcriber)
-                result = result_map.get(page_no)
-                if result and result.paragraphs:
-                    entries_map[page_no] = self._make_text_entry(page_no, source_name, part_index, part, source_key, result.paragraphs, fingerprint=fp)
-                    self.log.emit(f"[OCR 재시도 반영] p{page_no}")
+            cur_model = self.opts.gemini_model
+            while True:
+                if self._cancelled:
+                    return
+                decision = {"action": policy}
+                if policy == "ask":
+                    decision = self._ask_user_review({
+                        "page_no": page_no,
+                        "source_name": source_name,
+                        "image": target_img,
+                        "reason": error,
+                        "actual_chars": record.get("char_count", 0),
+                        "expected_chars": record.get("expected_chars", 0),
+                        "z_score": record.get("z_score", 0),
+                        "current_text": current_text,
+                        "current_model": cur_model,
+                        "current_temp": cur_page_temp,
+                        "retry_candidate_text": retry_text,
+                    })
+                action = decision.get("action", "keep_edited")
+                if action == "cancel":
+                    self._cancelled = True
+                    return
+                if action == "retry_gemini":
+                    retry_temp = float(decision.get("temperature", cur_page_temp))
+                    retry_model = decision.get("model") or cur_model
+                    result_map, retry_failures = transcriber.transcribe_batch_resilient([(page_no, target_img)], cancelled_fn=lambda: self._cancelled, log_cb=self.log.emit, start_temp=retry_temp, model_override=retry_model, max_attempts=1)
+                    self._emit_token_usage(transcriber)
+                    result = result_map.get(page_no)
+                    if result and result.paragraphs:
+                        entries_map[page_no] = self._make_text_entry(page_no, source_name, part_index, part, source_key, result.paragraphs, fingerprint=fp)
+                        self.log.emit(f"[OCR 재시도 반영] p{page_no}")
+                        break
+                    retry_err = retry_failures.get(page_no, "결과 없음")
+                    self.log.emit(f"[OCR 재시도 실패] p{page_no}: {retry_err}")
+                    if policy != "ask":
+                        break
+                    error = f"재시도 실패 ({retry_err})"
+                    cur_model = retry_model
+                    cur_page_temp = retry_temp
+                    if decision.get("edited_text") is not None:
+                        current_text = decision["edited_text"]
+                    continue
+                elif action == "illustration":
+                    self.log.emit(f"[사용자 분류] p{page_no}: 삽화로 저장")
+                    entries_map[page_no] = self._make_illustration_entry(
+                        page_no,
+                        source_name,
+                        part_index,
+                        part,
+                        source_key,
+                        "사용자 미리보기/검수 지정 삽화",
+                        raw_image=target_img,
+                        fingerprint=fp,
+                    )
+                    break
+                elif action == "skip":
+                    entries_map.pop(page_no, None)
+                    break
+                elif decision.get("edited_text") is not None:
+                    paragraphs = self._editable_text_to_paragraphs(decision["edited_text"])
+                    entries_map[page_no] = self._make_text_entry(page_no, source_name, part_index, part, source_key, paragraphs, fingerprint=fp)
+                    break
                 else:
-                    self.log.emit(f"[OCR 재시도 실패] p{page_no}: {retry_failures.get(page_no, '결과 없음')}")
-            elif action == "illustration":
-                self.log.emit(f"[사용자 분류] p{page_no}: 삽화로 저장")
-                entries_map[page_no] = self._make_illustration_entry(
-                    page_no,
-                    source_name,
-                    part_index,
-                    part,
-                    source_key,
-                    "사용자 미리보기/검수 지정 삽화",
-                    raw_image=target_img,
-                    fingerprint=fp,
-                )
-            elif action == "skip":
-                entries_map.pop(page_no, None)
-            elif decision.get("edited_text") is not None:
-                paragraphs = self._editable_text_to_paragraphs(decision["edited_text"])
-                entries_map[page_no] = self._make_text_entry(page_no, source_name, part_index, part, source_key, paragraphs, fingerprint=fp)
-            else:
-                self.log.emit(f"[기존 OCR 유지] p{page_no}")
+                    self.log.emit(f"[기존 OCR 유지] p{page_no}")
+                    break
             self.progress_stage.emit(f"3/5 이상치 검토 ({idx}/{total_anom})")
             self.progress.emit(idx, total_anom)
 
@@ -212,7 +231,16 @@ class ReviewMixin():
             collected.reverse()
         return " / ".join(collected)
 
+    def _page_text_snippet(self, entry: dict, from_end: bool) -> str:
+        paras = _ordered_paragraphs(entry.get("paragraphs", []))
+        lines = [_clean_ruby(pr.plain_text).strip() for pr in paras if not pr.is_scene_break and _clean_ruby(pr.plain_text).strip()]
+        if not lines:
+            return ""
+        picked = lines[-3:] if from_end else lines[:3]
+        return " / ".join(t[:90] for t in picked)
+
     def _detect_toc_in_illustrations(self, transcriber, ordered, chapters, epub_path, original_loader, backup_dir, design):
+        has_text_toc = bool(_collect_printed_toc_titles(ordered))
         illust_pages = []
         illust_entries_by_page = {}
         for entry in ordered:
@@ -231,13 +259,22 @@ class ReviewMixin():
                 illust_entries_by_page[page_no] = entry
         if not illust_pages:
             return ordered, chapters
-        self.progress_stage.emit("5/5 삽화 페이지 목차 판별")
-        self.log.emit(f"삽화 이미지 목차 판별 시작: {len(illust_pages)}장")
+        total_ill_batches = max(1, (len(illust_pages) + 4) // 5)
+        self.progress_stage.emit(f"5/5 삽화 페이지 목차 판별 (0/{total_ill_batches})")
+        self.progress.emit(0, total_ill_batches)
+        self.log.emit(f"삽화 이미지 목차 후보 판별 시작: {len(illust_pages)}장 (5장씩 묶음)")
+
+        def on_ill_toc_progress(done_b: int, total_b: int):
+            self.progress_stage.emit(f"5/5 삽화 페이지 목차 판별 ({done_b}/{total_b})")
+            self.progress.emit(done_b, total_b)
+            self._emit_token_usage(transcriber)
+
         try:
             detected = transcriber.detect_toc_from_illustrations(
                 illust_pages,
                 cancelled_fn=lambda: self._cancelled,
                 log_cb=self.log.emit,
+                progress_cb=on_ill_toc_progress,
             )
             self._emit_token_usage(transcriber)
         except InterruptedError:
@@ -249,27 +286,53 @@ class ReviewMixin():
             return ordered, chapters
         converted = 0
         new_by_page = {}
+        chap_candidates = []
+        text_entries_sorted = [e for e in sorted(ordered, key=lambda v: int(v.get("page_no", 0))) if e.get("type") == "text"]
+
         for item in detected:
             page_no = int(item.get("page_no", 0))
             old_ent = illust_entries_by_page.get(page_no)
             if old_ent is None:
                 continue
-            toc_title = str(item.get("toc_title", "")).strip()
+            kind = str(item.get("kind", "")).strip().lower()
+            if kind == "chapter_title":
+                title = str(item.get("title", "")).strip()
+                if title and not has_text_toc:
+                    prev_ctx = ""
+                    next_ctx = ""
+                    for te in text_entries_sorted:
+                        tp = int(te.get("page_no", 0))
+                        if tp < page_no:
+                            snip = self._page_text_snippet(te, from_end=True)
+                            if snip:
+                                prev_ctx = snip
+                        elif tp > page_no and not next_ctx:
+                            snip = self._page_text_snippet(te, from_end=False)
+                            if snip:
+                                next_ctx = snip
+                                break
+                    chap_candidates.append({
+                        "page_no": page_no,
+                        "title": title,
+                        "prev_context": prev_ctx,
+                        "next_context": next_ctx,
+                    })
+                continue
+
+            toc_title = str(item.get("toc_title", "")).strip() or "目次"
             raw_entries = [str(e).strip() for e in (item.get("entries", []) or []) if str(e).strip()]
             if not raw_entries:
                 continue
-            paragraphs = []
-            if toc_title:
-                paragraphs.append(
-                    OCRParagraph(
-                        spans=parse_inline_bold_spans(strip_ft_tags(toc_title), True),
-                        is_heading=False,
-                        heading_level=0,
-                        block_type="toc_title",
-                        reading_order=0,
-                        is_toc_entry=False,
-                    )
+            paragraphs = [
+                OCRParagraph(
+                    spans=parse_inline_bold_spans(strip_ft_tags(toc_title), True),
+                    is_heading=False,
+                    heading_level=0,
+                    block_type="toc_title",
+                    reading_order=0,
+                    is_toc_entry=False,
                 )
+            ]
             for row_text in raw_entries:
                 clean_row = strip_ft_tags(row_text).strip()
                 if not clean_row:
@@ -285,26 +348,104 @@ class ReviewMixin():
                         is_toc_entry=True,
                     )
                 )
-            if not paragraphs:
+            if not raw_entries:
                 continue
-            new_by_page[page_no] = {
-                "type": "text",
-                "page_no": page_no,
-                "source_name": old_ent.get("source_name", ""),
-                "source_part_index": old_ent.get("source_part_index", 0),
-                "source_key": old_ent.get("source_key", ""),
-                "page_fingerprint": old_ent.get("page_fingerprint", ""),
-                "paragraphs": paragraphs,
-                "ocr_error": "",
-            }
+            old_ent["toc_entries"] = raw_entries
             converted += 1
-            self.log.emit(f"[삽화 목차 감지] p{page_no}: {len(raw_entries)}개 목차 항목 추출" + (f" ({item['reason']})" if item.get("reason") else ""))
+            self.log.emit(f"[삽화 목차 후보 저장] p{page_no}: {len(raw_entries)}개 목차 항목 추출 (삽화 이미지 유지)" + (f" ({item['reason']})" if item.get("reason") else ""))
+
+        if chap_candidates:
+            existing_ch = [{"order": idx, "title": ch.title} for idx, ch in enumerate(chapters, start=1) if ch.title]
+            try:
+                approved = transcriber.validate_illustration_chapter_titles(
+                    chap_candidates,
+                    existing_ch,
+                    cancelled_fn=lambda: self._cancelled,
+                    log_cb=self.log.emit,
+                )
+                self._emit_token_usage(transcriber)
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                self.log.emit(f"[삽화 목차 문맥 검증 실패] {exc}")
+                approved = []
+            for app in approved:
+                p_no = int(app["page_no"])
+                title = app["chapter_title"]
+                ent = illust_entries_by_page.get(p_no)
+                if ent is not None:
+                    ent["chapter_title"] = title
+                    converted += 1
+                    self.log.emit(f"[삽화 장 분할 적용] p{p_no}: '{title}'" + (f" ({app['reason']})" if app.get("reason") else ""))
+
         if converted > 0:
             ordered = [new_by_page.get(int(e.get("page_no", 0)), e) for e in ordered]
             ordered = deduplicate_entries(sorted(ordered, key=lambda entry: int(entry.get("page_no", 0))))
             save_ocr_backup(backup_dir, ordered)
             _, chapters = export_light_novel(DIR_OUT, epub_path.stem, ordered, epub_path, self.opts.save_txt_folder, True, design)
-            self.log.emit(f"삽화 목차 반영 완료: {converted}페이지 변환 · 총 {len(chapters)}개 장으로 EPUB 재생성")
+            self.log.emit(f"삽화 목차 반영 완료: {converted}건 적용 · 총 {len(chapters)}개 장으로 EPUB 재생성")
+        return ordered, chapters
+
+    def _fix_misclassified_toc_pages(self, ordered, chapters, epub_path, backup_dir, design):
+        empty_pages = {}
+        for ch in chapters:
+            if not ch.title or ch.title == "Table of Contents":
+                continue
+            body_count = sum(1 for it in ch.items if it.get("type") in {"paragraph", "illustration", "toc_entry", "scene_break"})
+            if body_count == 0 and ch.items:
+                p_no = int(ch.items[0].get("page_no", 0))
+                if p_no > 0:
+                    empty_pages[p_no] = empty_pages.get(p_no, 0) + 1
+        suspect_pages = {p_no for p_no, cnt in empty_pages.items() if cnt >= 2}
+        if not suspect_pages:
+            return ordered, chapters
+        fixed = 0
+        for entry in ordered:
+            if entry.get("type") == "illustration":
+                ill_toc = entry.get("toc_entries", []) or []
+                if ill_toc:
+                    p_no = int(entry.get("page_no", 0))
+                    for rt in ill_toc:
+                        t = _clean_ruby(str(rt)).strip()
+                        if t:
+                            printed_toc.append(t)
+                    if len(toc_images) < 4 and p_no > 0:
+                        img = original_loader(p_no)
+                        if img is not None:
+                            toc_images.append((p_no, img))
+                continue
+            if entry.get("type") != "text":
+                continue
+            p_no = int(entry.get("page_no", 0))
+            if p_no not in suspect_pages:
+                continue
+            paras = _ordered_paragraphs(entry.get("paragraphs", []))
+            if not paras:
+                continue
+            has_narrative = any(
+                len(_clean_ruby(pr.plain_text).strip()) > 65 or _clean_ruby(pr.plain_text).strip().endswith("。")
+                for pr in paras
+                if not pr.is_scene_break
+            )
+            if has_narrative:
+                continue
+            for idx_p, pr in enumerate(paras):
+                if pr.is_scene_break:
+                    continue
+                pr.is_heading = False
+                pr.heading_level = 0
+                if idx_p == 0 and len(_clean_ruby(pr.plain_text).strip()) <= 15 and "目" in pr.plain_text:
+                    pr.block_type = "toc_title"
+                    pr.is_toc_entry = False
+                else:
+                    pr.block_type = "toc_entry"
+                    pr.is_toc_entry = True
+            fixed += 1
+            self.log.emit(f"[목차 오분류 자동 보정] p{p_no}: 빈 본문 장을 생성한 제목 나열 페이지를 목차로 변환")
+        if fixed > 0:
+            ordered = deduplicate_entries(sorted(ordered, key=lambda entry: int(entry.get("page_no", 0))))
+            save_ocr_backup(backup_dir, ordered)
+            _, chapters = export_light_novel(DIR_OUT, epub_path.stem, ordered, epub_path, self.opts.save_txt_folder, True, design)
         return ordered, chapters
 
     def _reconcile_toc_headings(self, transcriber, ordered, chapters, epub_path, original_loader, backup_dir, design):
@@ -416,9 +557,12 @@ class ReviewMixin():
             if not (0 <= para_index < len(paragraphs)):
                 continue
             target_p = paragraphs[para_index]
+            target_p.is_toc_entry = False
+            target_p.is_scene_break = False
             target_p.is_heading = True
             target_p.heading_level = level
-            target_p.block_type = "chapter_heading" if level == 1 else "section_heading"
+            target_p.block_type = "chapter_heading" if level == 1 else "divider"
+            entry["paragraphs"] = paragraphs
             cur_plain = _clean_ruby(target_p.plain_text).strip()
             if title and cur_plain != title and len(title) >= len(cur_plain):
                 target_p.spans = [TextSpan(title, target_p.is_all_bold)]
@@ -509,19 +653,63 @@ class ReviewMixin():
         if not intervals:
             return ordered, chapters
 
-        self.progress_stage.emit(f"5/5 누락 목차 구간 이미지 탐색 (0/{len(intervals)})")
-        self.progress.emit(0, len(intervals))
-        self.log.emit(f"누락된 인쇄 목차 {len(missing_indices)}개 감지 → {len(intervals)}개 구간 이미지 정밀 복구 시작")
-
         by_page = {int(entry.get("page_no", 0)): entry for entry in ordered}
-        recovered_total = 0
 
-        for iv_idx, (m_titles, start_p, end_p) in enumerate(intervals, start=1):
+        def is_candidate_page(p_no: int, prev_was_non_text: bool) -> bool:
+            ent = by_page.get(p_no)
+            if ent is None:
+                return True
+            if ent.get("type") == "illustration":
+                return not (p_no == 1 and ent.get("is_cover", False))
+            paras = _ordered_paragraphs(ent.get("paragraphs", []))
+            if not paras:
+                return True
+            if is_printed_toc_page(paras):
+                return False
+            if prev_was_non_text:
+                return True
+            total_chars = sum(len(_clean_ruby(pr.plain_text).strip()) for pr in paras)
+            if len(paras) <= 6 or total_chars <= 320:
+                return True
+            for pr in paras[:3]:
+                t = _clean_ruby(pr.plain_text).strip()
+                if not t:
+                    continue
+                if pr.is_heading or pr.is_toc_candidate or pr.is_all_bold:
+                    return True
+                if len(t) <= 45 and not t.startswith(("「", "『", "（", "(")) and not t.endswith(("。", "、", "」", "』")):
+                    return True
+            return False
+
+        interval_batches = []
+        total_img_batches = 0
+        for m_titles, start_p, end_p in intervals:
+            all_range = [p for p in range(start_p, end_p + 1) if p in part_meta_by_page]
+            cand_pages = []
+            prev_non_text = True
+            for p_no in all_range:
+                ent = by_page.get(p_no)
+                if is_candidate_page(p_no, prev_non_text):
+                    cand_pages.append(p_no)
+                prev_non_text = (ent is None or ent.get("type") == "illustration")
+            target_pages = cand_pages if cand_pages else all_range
+            img_batches = [target_pages[i:i + 8] for i in range(0, len(target_pages), 8)]
+            interval_batches.append((m_titles, start_p, end_p, target_pages, img_batches))
+            total_img_batches += max(1, len(img_batches))
+
+        self.progress_stage.emit(f"5/5 누락 목차 구간 이미지 탐색 (0/{total_img_batches})")
+        self.progress.emit(0, total_img_batches)
+        self.log.emit(f"누락된 인쇄 목차 {len(missing_indices)}개 감지 → {len(intervals)}개 구간 (후보 {sum(len(x[3]) for x in interval_batches)}장 / {total_img_batches}개 묶음) 병렬 복구 시작")
+
+        recovered_total = 0
+        done_img_batches = 0
+        max_workers = max(1, min(4, int(self.opts.gemini_max_concurrent)))
+
+        for iv_idx, (m_titles, start_p, end_p, target_pages, img_batches) in enumerate(interval_batches, start=1):
             if self._cancelled:
                 break
-            pages_in_range = [p for p in range(start_p, end_p + 1) if p in part_meta_by_page]
             range_meta = []
-            for p_no in range(start_p, end_p + 1):
+            for p_no in target_pages:
                 ent = by_page.get(p_no)
                 if ent is None:
                     range_meta.append({"page_no": p_no, "type": "missing_or_blank", "preview": ""})
@@ -535,29 +723,71 @@ class ReviewMixin():
                     range_meta.append({"page_no": p_no, "type": "text", "para_count": len(paras), "first_lines": snippets})
 
             remaining_titles = list(m_titles)
-            img_batches = [pages_in_range[i:i + 8] for i in range(0, len(pages_in_range), 8)]
-            for b_pages in img_batches:
-                if not remaining_titles or self._cancelled:
-                    break
+            if not img_batches:
+                done_img_batches += 1
+                self.progress_stage.emit(f"5/5 누락 목차 구간 이미지 탐색 ({done_img_batches}/{total_img_batches})")
+                self.progress.emit(done_img_batches, total_img_batches)
+                continue
+
+            def run_one_batch(b_pages):
                 b_meta = [m for m in range_meta if m["page_no"] in set(b_pages)]
                 b_imgs = []
                 for p in b_pages:
                     loaded = original_loader(p)
                     if loaded is not None:
                         b_imgs.append((p, loaded))
-                try:
-                    found_items = transcriber.locate_missing_chapters_in_range(
-                        remaining_titles,
-                        b_meta,
-                        range_images=b_imgs,
-                        cancelled_fn=lambda: self._cancelled,
-                        log_cb=self.log.emit,
-                    )
-                    self._emit_token_usage(transcriber)
-                except InterruptedError:
-                    return ordered, chapters
-                except Exception as exc:
-                    self.log.emit(f"[누락 목차 구간 {start_p}~{end_p} 탐색 실패] {exc}")
+                return transcriber.locate_missing_chapters_in_range(
+                    list(remaining_titles),
+                    b_meta,
+                    range_images=b_imgs,
+                    cancelled_fn=lambda: self._cancelled,
+                    log_cb=self.log.emit,
+                )
+
+            iv_done = 0
+            batch_results = []
+            ex = ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(img_batches))))
+            try:
+                futs = {ex.submit(run_one_batch, bp): bp for bp in img_batches}
+                pending = set(futs.keys())
+                while pending:
+                    if self._cancelled:
+                        ex.shutdown(wait=False, cancel_futures=True)
+                        return ordered, chapters
+                    done, pending = wait(pending, timeout=0.25, return_when=FIRST_COMPLETED)
+                    for fut in done:
+                        iv_done += 1
+                        done_img_batches += 1
+                        self.progress_stage.emit(f"5/5 누락 목차 구간 이미지 탐색 ({done_img_batches}/{total_img_batches})")
+                        self.progress.emit(done_img_batches, total_img_batches)
+                        try:
+                            found = fut.result()
+                            self._emit_token_usage(transcriber)
+                            if found:
+                                batch_results.extend(found)
+                        except InterruptedError:
+                            ex.shutdown(wait=False, cancel_futures=True)
+                            return ordered, chapters
+                        except Exception as exc:
+                            self.log.emit(f"[누락 목차 구간 {start_p}~{end_p} 탐색 실패] {exc}")
+            except BaseException:
+                ex.shutdown(wait=False, cancel_futures=True)
+                raise
+            else:
+                ex.shutdown(wait=True)
+
+            if batch_results:
+                deduped_found = []
+                seen_found_keys = set()
+                for item in sorted(batch_results, key=lambda x: int(x.get("page_no", 0))):
+                    t_key = _plain_key(str(item.get("chapter_title", "")))
+                    if not t_key or t_key in seen_found_keys:
+                        continue
+                    seen_found_keys.add(t_key)
+                    deduped_found.append(item)
+                batch_results = deduped_found
+            for found_items in [batch_results]:
+                if not found_items:
                     continue
 
                 for item in found_items:
@@ -570,7 +800,12 @@ class ReviewMixin():
                         remaining_titles.remove(title)
 
                     ent = by_page.get(p_no)
-                    if (ent is None or ent.get("type") == "illustration" or need_reocr) and raw_paras:
+                    if ent is not None and ent.get("type") == "illustration":
+                        ent["chapter_title"] = title
+                        recovered_total += 1
+                        self.log.emit(f"[누락 목차 이미지 장 분할] p{p_no}: '{title}'" + (f" ({item['reason']})" if item.get("reason") else ""))
+                        continue
+                    if (ent is None or need_reocr) and raw_paras:
                         new_paras = []
                         has_title_in_paras = False
                         t_key = _plain_key(title)
@@ -635,10 +870,13 @@ class ReviewMixin():
                         paras = _ordered_paragraphs(ent.get("paragraphs", []))
                         if 0 <= para_idx < len(paras):
                             tp = paras[para_idx]
+                            tp.is_toc_entry = False
+                            tp.is_scene_break = False
                             tp.is_heading = True
                             tp.heading_level = 1
                             tp.block_type = "chapter_heading"
                             tp.spans = [TextSpan(title, tp.is_all_bold)]
+                            ent["paragraphs"] = paras
                         else:
                             paras.insert(
                                 0,
@@ -657,8 +895,7 @@ class ReviewMixin():
                     recovered_total += 1
                     self.log.emit(f"[누락 목차 이미지 복구] p{p_no}: '{title}'" + (f" ({item['reason']})" if item.get("reason") else ""))
 
-            self.progress_stage.emit(f"5/5 누락 목차 구간 이미지 탐색 ({iv_idx}/{len(intervals)})")
-            self.progress.emit(iv_idx, len(intervals))
+
 
         if recovered_total > 0:
             ordered = deduplicate_entries(sorted(ordered, key=lambda entry: int(entry.get("page_no", 0))))
@@ -684,6 +921,7 @@ class ReviewMixin():
             if enabled:
                 checks.append(key)
         content_checks = [key for key in checks if key != "illustrations"]
+        bulk_large_policy = None
         if self.opts.gemini_final_review and content_checks:
             max_passes = max(1, min(3, int(self.opts.gemini_review_passes)))
             for pass_no in range(1, max_passes + 1):
@@ -705,7 +943,7 @@ class ReviewMixin():
                         })
                 if not review_pages:
                     break
-                est_batches = max(1, (len(review_pages) + 11) // 12)
+                est_batches = max(1, (len(review_pages) + 15) // 16)
                 self.progress_stage.emit(f"5/5 최종 내용 검수 {pass_no}/{max_passes} (0/{est_batches})")
                 self.progress.emit(0, est_batches)
                 self.log.emit(f"Gemini 최종 내용 검수 {pass_no}/{max_passes}: 본문 {len(review_pages)}페이지 · {', '.join(checks)}")
@@ -723,6 +961,7 @@ class ReviewMixin():
                         max_concurrent=max(1, int(self.opts.gemini_max_concurrent)),
                         progress_cb=on_review_progress,
                         log_cb=self.log.emit,
+                        original_loader=original_loader,
                     )
                     self._emit_token_usage(transcriber)
                 except InterruptedError:
@@ -743,8 +982,39 @@ class ReviewMixin():
                     if not new_text or new_text == old_text.strip():
                         continue
                     if not _is_safe_content_correction(old_text, new_text):
-                        self.log.emit(f"[수정 제외 · 창작/변형 차단] p{page_no}: 원문 글자 변형이나 임의 문장 보완이 커 반영하지 않음")
-                        continue
+                        if bulk_large_policy == "keep":
+                            self.log.emit(f"[수정 제외 · 사용자 유지 선택] p{page_no}")
+                            continue
+                        if bulk_large_policy != "apply":
+                            old_pl = _strip_for_diff(old_text)
+                            new_pl = _strip_for_diff(new_text)
+                            sim = SequenceMatcher(None, old_pl, new_pl).ratio() * 100.0
+                            reason_msg = str(correction.get("reason", "")).strip()
+                            if old_pl and len(new_pl) < len(old_pl) * 0.45:
+                                reason_msg = "수정안이 원문보다 훨씬 짧음(부분 발췌 의심) | " + reason_msg
+                            decision = self._ask_user_correction_preview({
+                                "page_no": page_no,
+                                "image": original_loader(page_no),
+                                "old_text": old_text,
+                                "new_text": new_text,
+                                "reason": reason_msg,
+                                "similarity": sim,
+                            })
+                            act = decision.get("action", "keep")
+                            if act == "cancel":
+                                self._cancelled = True
+                                return
+                            if decision.get("apply_all"):
+                                bulk_large_policy = act
+                            if act != "apply":
+                                self.log.emit(f"[수정 제외 · 사용자 유지 선택] p{page_no}")
+                                continue
+                            edited = str(decision.get("edited_text", "")).strip()
+                            if edited:
+                                new_text = edited
+                            self.log.emit(f"[대량 수정 사용자 승인] p{page_no}")
+                        else:
+                            self.log.emit(f"[대량 수정 일괄 승인] p{page_no}")
                     prev_heading_map = {
                         _plain_key(p.plain_text): (p.is_heading, p.heading_level, p.block_type, p.is_toc_candidate, p.is_toc_entry)
                         for p in old_paras
@@ -784,15 +1054,19 @@ class ReviewMixin():
         if not self.opts.gemini_final_review:
             self.log.emit("Gemini 최종 검수가 설정에서 비활성화되어 있습니다.")
             return
-        if self.opts.gemini_review_toc or self.opts.gemini_review_headings:
+        if self.opts.gemini_review_illust_toc and (self.opts.gemini_review_toc or self.opts.gemini_review_headings):
             ordered, chapters = self._detect_toc_in_illustrations(transcriber, ordered, chapters, epub_path, original_loader, backup_dir, design)
             entries[:] = ordered
             if self._cancelled:
                 return
+            ordered, chapters = self._fix_misclassified_toc_pages(ordered, chapters, epub_path, backup_dir, design)
+            entries[:] = ordered
             ordered, chapters = self._reconcile_toc_headings(transcriber, ordered, chapters, epub_path, original_loader, backup_dir, design)
             entries[:] = ordered
             if self._cancelled:
                 return
+            ordered, chapters = self._fix_misclassified_toc_pages(ordered, chapters, epub_path, backup_dir, design)
+            entries[:] = ordered
             ordered, chapters = self._recover_missing_toc_chapters(transcriber, ordered, chapters, epub_path, part_meta_by_page, original_loader, backup_dir, design)
             entries[:] = ordered
             if self._cancelled:
@@ -821,6 +1095,8 @@ class ReviewMixin():
                 illustration_order += 1
                 row["illustration_order"] = illustration_order
                 row["crop_size"] = list(get_image_size(entry))
+                if entry.get("chapter_title"):
+                    row["chapter_title"] = entry.get("chapter_title")
             else:
                 paragraphs = entry.get("paragraphs", [])
                 row["blocks"] = []
@@ -855,11 +1131,29 @@ class ReviewMixin():
                 if item_type == "toc_entry":
                     text = "".join(span.text for span in item.get("spans", []))
                 items.append({"type": item_type, "page": int(item.get("page_no", 0)), "level": int(item.get("level", 0)), "text": str(text)[:90]})
-            chapter_summaries.append({"order": chapter_index, "title": chapter.title, "in_navigation": bool(chapter.title), "items": items})
+            all_p = [int(it.get("page_no", 0)) for it in chapter.items if int(it.get("page_no", 0)) > 0]
+            para_cnt = sum(1 for it in chapter.items if it.get("type") == "paragraph")
+            chapter_summaries.append({
+                "order": chapter_index,
+                "title": chapter.title,
+                "in_navigation": bool(chapter.title),
+                "page_range": [min(all_p), max(all_p)] if all_p else [],
+                "paragraph_count": para_cnt,
+                "items": items,
+            })
         self.progress.emit(1, 3)
         local_issues = []
         if duplicate_fingerprints:
             local_issues.append("중복 원본 이미지 지문이 남아 있습니다: " + str(duplicate_fingerprints[:12]))
+        empty_chapters = []
+        for ch in chapters:
+            if not ch.title or ch.title == "Table of Contents":
+                continue
+            body_count = sum(1 for it in ch.items if it.get("type") in {"paragraph", "illustration", "toc_entry", "scene_break"})
+            if body_count == 0:
+                empty_chapters.append(ch.title)
+        if empty_chapters:
+            local_issues.append(f"본문이 비어 있는 장 {len(empty_chapters)}개 검출 (목차 오분류 의심): " + ", ".join(empty_chapters[:8]))
         try:
             validation = validate_epub_package(epub_path)
             local_issues.extend(validation.get("warnings", []))
@@ -872,7 +1166,7 @@ class ReviewMixin():
         self.progress.emit(2, 3)
         self.log.emit(f"Gemini 최종 구조 검수: 페이지 {len(page_summaries)}장, 장 {len(chapter_summaries)}개, 인쇄 목차 {len(toc_images)}장, 삽화 {illustration_order}개")
         try:
-            issues = transcriber.audit_epub_structure(
+            audit_res = transcriber.audit_epub_structure(
                 page_summaries,
                 chapter_summaries,
                 epub_structure,
@@ -882,10 +1176,65 @@ class ReviewMixin():
                 log_cb=self.log.emit,
             )
             self._emit_token_usage(transcriber)
+            issues = audit_res.get("issues", []) if isinstance(audit_res, dict) else list(audit_res or [])
+            fixes = audit_res.get("fixes", {}) if isinstance(audit_res, dict) else {}
+            struct_applied = 0
+            by_page_audit = {int(e.get("page_no", 0)): e for e in ordered}
+            for dm in fixes.get("demote_headings", []) or []:
+                if not isinstance(dm, dict):
+                    continue
+                p_no = int(dm.get("page_no", 0) or 0)
+                t_txt = _plain_key(str(dm.get("text", "")))
+                to_sec = bool(dm.get("to_section", False))
+                ent = by_page_audit.get(p_no)
+                if ent and ent.get("type") == "text":
+                    paras = _ordered_paragraphs(ent.get("paragraphs", []))
+                    for pr in paras:
+                        if pr.is_heading and (not t_txt or _plain_key(pr.plain_text) == t_txt):
+                            if to_sec:
+                                pr.is_heading = True
+                                pr.heading_level = 2
+                                pr.block_type = "divider"
+                            else:
+                                pr.is_heading = False
+                                pr.heading_level = 0
+                                pr.block_type = "paragraph"
+                            struct_applied += 1
+                            self.log.emit(f"[최종 구조 검수 자동 수정] p{p_no}: '{pr.plain_text.strip()[:30]}' → {'소제목' if to_sec else '일반 문단'} ({dm.get('reason', '')})")
+                    ent["paragraphs"] = paras
+            for rn in fixes.get("rename_chapters", []) or []:
+                if not isinstance(rn, dict):
+                    continue
+                p_no = int(rn.get("page_no", 0) or 0)
+                old_t = _plain_key(str(rn.get("old_title", "")))
+                new_t = str(rn.get("new_title", "")).strip()
+                ent = by_page_audit.get(p_no)
+                if not ent or not new_t:
+                    continue
+                if ent.get("type") == "illustration":
+                    if not old_t or _plain_key(str(ent.get("chapter_title", ""))) == old_t:
+                        ent["chapter_title"] = new_t
+                        struct_applied += 1
+                        self.log.emit(f"[최종 구조 검수 제목 수정] p{p_no}: '{new_t}' ({rn.get('reason', '')})")
+                elif ent.get("type") == "text":
+                    paras = _ordered_paragraphs(ent.get("paragraphs", []))
+                    for pr in paras:
+                        if pr.is_heading and (not old_t or _plain_key(pr.plain_text) == old_t):
+                            pr.spans = [TextSpan(new_t, pr.is_all_bold)]
+                            struct_applied += 1
+                            self.log.emit(f"[최종 구조 검수 제목 수정] p{p_no}: '{new_t}' ({rn.get('reason', '')})")
+                            break
+                    ent["paragraphs"] = paras
+            if struct_applied > 0:
+                ordered = deduplicate_entries(sorted(ordered, key=lambda entry: int(entry.get("page_no", 0))))
+                entries[:] = ordered
+                save_ocr_backup(backup_dir, ordered)
+                _, chapters = export_light_novel(DIR_OUT, epub_path.stem, ordered, epub_path, self.opts.save_txt_folder, True, design)
+                self.log.emit(f"최종 구조 검수 수정 반영 완료: {struct_applied}건 · 총 {len(chapters)}개 장으로 EPUB 재생성")
             if issues:
                 for issue in issues:
                     self.log.emit(f"[Gemini 최종 구조 검수] {issue}")
-            else:
+            elif struct_applied == 0:
                 self.log.emit("Gemini 최종 구조 검수: 명확한 구조·순서·목차·크롭 오류가 발견되지 않았습니다.")
         except Exception as exc:
             self.log.emit(f"[Gemini 최종 구조 검수 실패] {exc}")

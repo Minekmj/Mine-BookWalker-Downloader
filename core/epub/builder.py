@@ -36,7 +36,7 @@ def build_epub(epub_path: Path, book_title: str, chapters: List[EpubChapter], de
     book_uuid = str(uuid.uuid4())
     modified = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     safe_title = _xml_safe(book_title or "Novel")
-    chapters = [EpubChapter(chapter.title or "", list(chapter.items)) for chapter in chapters]
+    chapters = [EpubChapter(chapter.title or "", list(chapter.items), hide_heading=chapter.hide_heading) for chapter in chapters]
     chapters = [chapter for chapter in chapters if chapter.items]
     has_cover, cover_item, chapters = _extract_cover(chapters, cfg)
 
@@ -58,7 +58,7 @@ def build_epub(epub_path: Path, book_title: str, chapters: List[EpubChapter], de
     chapter_xhtml = []
     chapter_subsections = {}
     for chapter_index, (filename, chapter) in enumerate(chapter_info, start=1):
-        xhtml, subsections = render_chapter_xhtml(chapter, chapter_index, title_targets, registry)
+        xhtml, subsections = render_chapter_xhtml(chapter, chapter_index, title_targets, registry, register_dividers=cfg.register_dividers_in_toc)
         if xhtml is None:
             continue
         chapter_xhtml.append((filename, str(chapter.title or "").strip(), xhtml))

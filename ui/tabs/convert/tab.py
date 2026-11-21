@@ -23,6 +23,7 @@ class ConvertTab(LayoutMixin, PreviewMixin, SettingsMixin, RunMixin, QWidget):
         self._cur_sub_idx: int = 0
         self._classification_overrides = dict(self.adv.get("classification_overrides", {}) or {})
         self._illust_trim_overrides = dict(self.adv.get("illust_trim_overrides", {}) or {})
+        self._illust_no_merge = dict(self.adv.get("illust_no_merge", {}) or {})
         saved_crop = self.adv.get("cover_crop_rect")
         self._cover_crop_rect = tuple(saved_crop) if saved_crop and len(saved_crop) == 4 else None
 

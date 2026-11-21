@@ -100,7 +100,7 @@ def save_ocr_backup(backup_dir: Path, entries: List[Dict]):
                 entry["image"] = None
                 entry["_backup_png_saved"] = True
             referenced_images.add(filename)
-            serialized.append({**common, "type": "illustration", "reason": str(entry.get("reason", "")), "is_cover": bool(entry.get("is_cover", False)), "image_rel": f"backup_illustrations/{filename}"})
+            serialized.append({**common, "type": "illustration", "reason": str(entry.get("reason", "")), "is_cover": bool(entry.get("is_cover", False)), "chapter_title": str(entry.get("chapter_title", "")), "toc_entries": list(entry.get("toc_entries", []) or []), "image_rel": f"backup_illustrations/{filename}"})
         else:
             serialized.append({**common, "type": "text", "paragraphs": [paragraph.to_dict() for paragraph in entry.get("paragraphs", [])], "ocr_error": str(entry.get("ocr_error", ""))})
     for image_path in image_dir.glob("page_*.png"):
@@ -129,7 +129,7 @@ def load_ocr_backup(backup_json_path: Path) -> List[Dict]:
             image_path = (backup_dir / str(item.get("image_rel", ""))).resolve()
             if not image_path.is_file():
                 continue
-            entries.append({**common, "type": "illustration", "reason": str(item.get("reason", "")), "is_cover": bool(item.get("is_cover", False)), "image": None, "image_path": str(image_path), "_backup_png_saved": True})
+            entries.append({**common, "type": "illustration", "reason": str(item.get("reason", "")), "is_cover": bool(item.get("is_cover", False)), "chapter_title": str(item.get("chapter_title", "")), "toc_entries": [str(x) for x in (item.get("toc_entries", []) or []) if str(x).strip()], "image": None, "image_path": str(image_path), "_backup_png_saved": True})
         else:
             entries.append({
                 **common,

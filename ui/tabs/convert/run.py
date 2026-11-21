@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QMessageBox
 
 from core.gemini import parse_api_keys
 from core.paths import DIR_EPUB, DIR_OUT
+from ui.dialogs.correction_preview_dialog import CorrectionPreviewDialog
 from ui.dialogs.fail_dialog import FailureReviewDialog
 from ui.workers import ProcessOptions, ProcessWorker
 
@@ -89,6 +90,7 @@ class RunMixin():
             gemini_review_paragraphs=bool(self.adv.get("gemini_review_paragraphs", True)),
             gemini_review_headings=bool(self.adv.get("gemini_review_headings", True)),
             gemini_review_toc=bool(self.adv.get("gemini_review_toc", True)),
+            gemini_review_illust_toc=bool(self.adv.get("gemini_review_illust_toc", True)),
             gemini_review_duplicates=bool(self.adv.get("gemini_review_duplicates", True)),
             gemini_review_illustrations=bool(self.adv.get("gemini_review_illustrations", True)),
             gemini_review_passes=max(1, min(3, int(self.adv.get("gemini_review_passes", 2)))),
@@ -104,6 +106,7 @@ class RunMixin():
             cover_crop_rect=self._cover_crop_rect,
             classification_overrides=dict(self._classification_overrides),
             illust_trim_overrides=dict(self._illust_trim_overrides),
+            illust_no_merge=dict(self._illust_no_merge),
         )
 
         self.log_box.clear()
@@ -122,12 +125,19 @@ class RunMixin():
         self.worker.token_usage.connect(self._on_token_usage)
         self.worker.log.connect(self.log_box.appendPlainText)
         self.worker.review_needed.connect(self._on_review_needed)
+        self.worker.correction_preview_needed.connect(self._on_correction_preview_needed)
         self.worker.finished_ok.connect(self._on_finished)
         self.worker.failed.connect(self._on_failed)
         self.worker.start()
 
     def _on_review_needed(self, payload: dict):
         dlg = FailureReviewDialog(payload, self.adv, parent=self)
+        dlg.exec()
+        if self.worker:
+            self.worker.set_review_decision(dlg.get_decision())
+
+    def _on_correction_preview_needed(self, payload: dict):
+        dlg = CorrectionPreviewDialog(payload, parent=self)
         dlg.exec()
         if self.worker:
             self.worker.set_review_decision(dlg.get_decision())

@@ -8,10 +8,10 @@ _BOLD_TAG_RE = re.compile(r"(<b>.*?</b>)", re.IGNORECASE | re.DOTALL)
 _MD_BOLD_RE = re.compile(r"(\*\*.*?\*\*)")
 _BOLD_TAG_TOKEN_RE = re.compile(r"(</?b>)", re.IGNORECASE)
 _FT_BLOCK_RE = re.compile(r"<ft\b[^>]*>(.*?)</ft>", re.IGNORECASE | re.DOTALL)
-_STRAY_FT_RE = re.compile(r"</?ft\b[^>]*>", re.IGNORECASE)
+_STRAY_FT_RE = re.compile(r"</?(?:ft|font|span)\b[^>]*>", re.IGNORECASE)
 _RUBY_BLOCK_RE = re.compile(r"<ruby\b[^>]*>(.*?)</ruby>", re.IGNORECASE | re.DOTALL)
 _RT_RP_RE = re.compile(r"<(?:rt|rp)\b[^>]*>.*?</(?:rt|rp)>", re.IGNORECASE | re.DOTALL)
-_STRAY_RUBY_TAG_RE = re.compile(r"</?(?:ruby|rt|rp)\b[^>]*>", re.IGNORECASE)
+_STRAY_RUBY_TAG_RE = re.compile(r"</?(?:ruby|rt|rp|font|span)\b[^>]*>", re.IGNORECASE)
 
 
 def strip_ft_tags(text: str) -> str:
@@ -222,3 +222,24 @@ def strip_ruby_tags(text: str) -> str:
     cleaned = _RT_RP_RE.sub("", cleaned)
     cleaned = _STRAY_RUBY_TAG_RE.sub("", cleaned)
     return cleaned
+
+
+def _loads_json_relaxed(raw_text: str):
+    text = (raw_text or "").strip()
+    m = re.search(r"\{[\s\S]*\}", text)
+    candidate = m.group(0) if m else text
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError as orig_exc:
+        repaired = re.sub(r",(\s*[}\]])", r"\1", candidate)
+        repaired = re.sub(r'([}\]0-9]|true|false|null)\s+(?=["{\[])', r"\1, ", repaired)
+        repaired = re.sub(r'"\s+(?="[^"]+"\s*:)', '", ', repaired)
+        repaired = re.sub(r'"\s+(?=["{\[])', '", ', repaired)
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError:
+            try:
+                obj, _ = json.JSONDecoder().raw_decode(repaired)
+                return obj
+            except Exception:
+                raise orig_exc

@@ -3,10 +3,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from core.epub.headings import is_chapter_heading, is_printed_toc_page, is_section_heading
+from core.epub.headings import is_chapter_heading, is_printed_toc_page, is_section_heading, is_toc_like_line, is_toc_title_text
 from core.epub.patterns import ROMAN_ALONE_RE, SYMBOL_CHAPTER_RE, TOC_TITLE_RE
 from core.epub.text_utils import _clean_ruby, _copy_spans, _plain_key, _toc_text
-from core.ocr_engine import OCRParagraph
+from core.ocr_engine import OCRParagraph, TextSpan
 
 PREFIX_STRIP_RE = re.compile(
     r"^(?:(?:[IVXLCDM]{1,7}|[Ⅰ-Ⅻⅰ-ⅻ]{1,4})\s*[・◆◇■□●○◎★☆\-－―─:.：]?\s*)?[◆◇■□●○◎★☆・\-－―─:.：\s]+"
@@ -17,6 +17,7 @@ PREFIX_STRIP_RE = re.compile(
 class EpubChapter:
     title: str
     items: List[Dict] = field(default_factory=list)
+    hide_heading: bool = False
 
 
 def _ordered_paragraphs(paragraphs: List[OCRParagraph]) -> List[OCRParagraph]:
@@ -77,6 +78,18 @@ def _collect_printed_toc_titles(entries: List[Dict]) -> List[Tuple[str, str, str
     toc_titles: List[Tuple[str, str, str]] = []
     seen = set()
     for entry in entries:
+        if entry.get("type") == "illustration":
+            for raw_t in entry.get("toc_entries", []) or []:
+                clean_title = _toc_text([TextSpan(str(raw_t))])
+                if not clean_title:
+                    continue
+                full_key = _plain_key(clean_title)
+                stripped = PREFIX_STRIP_RE.sub("", clean_title).strip()
+                suffix_key = _plain_key(stripped) if len(_plain_key(stripped)) >= 2 else ""
+                if full_key and full_key not in seen:
+                    seen.add(full_key)
+                    toc_titles.append((clean_title, full_key, suffix_key))
+            continue
         if entry.get("type") != "text":
             continue
         paragraphs = _ordered_paragraphs(entry.get("paragraphs", []))
@@ -84,7 +97,7 @@ def _collect_printed_toc_titles(entries: List[Dict]) -> List[Tuple[str, str, str
             continue
         for paragraph in paragraphs:
             text = _clean_ruby(paragraph.plain_text).strip()
-            if not text or TOC_TITLE_RE.match(text) or paragraph.block_type == "toc_title" or paragraph.is_scene_break:
+            if not text or is_toc_title_text(text) or paragraph.block_type == "toc_title" or paragraph.is_scene_break:
                 continue
             clean_title = _toc_text(_copy_spans(paragraph))
             if not clean_title:
@@ -177,6 +190,17 @@ def organize_entries_to_chapters(entries: List[Dict], scene_break_style: str = "
     for entry in deduped:
         page_no = int(entry.get("page_no", 0))
         if entry.get("type") == "illustration":
+            illust_title = str(entry.get("chapter_title", "") or "").strip()
+            if illust_title:
+                t_key = _plain_key(illust_title)
+                if current.title and _plain_key(current.title) == t_key and sum(1 for it in current.items if it.get("type") in {"paragraph", "illustration", "toc_entry"}) == 0:
+                    current = EpubChapter(illust_title, hide_heading=True)
+                else:
+                    flush()
+                    current = EpubChapter(illust_title, hide_heading=True)
+                last_chapter_page = page_no
+                if t_key:
+                    recent_chapter_pages[t_key] = page_no
             current.items.append({
                 "type": "illustration",
                 "image": entry.get("image"),
@@ -193,6 +217,14 @@ def organize_entries_to_chapters(entries: List[Dict], scene_break_style: str = "
         if not paragraphs:
             continue
         is_toc = is_printed_toc_page(paragraphs)
+        if not is_toc and current_is_toc:
+            non_break = [p for p in paragraphs if not p.is_scene_break]
+            has_narrative = any(
+                len(_clean_ruby(p.plain_text).strip()) > 65 or _clean_ruby(p.plain_text).strip().endswith("。")
+                for p in non_break
+            )
+            if len(non_break) >= 2 and not has_narrative and sum(1 for p in non_break if is_toc_like_line(p)) >= len(non_break) - 1:
+                is_toc = True
         if is_toc and not current_is_toc:
             flush()
             toc_title = "Table of Contents"
@@ -204,7 +236,7 @@ def organize_entries_to_chapters(entries: List[Dict], scene_break_style: str = "
         if is_toc:
             for paragraph in paragraphs:
                 text = _clean_ruby(paragraph.plain_text).strip()
-                if not text or TOC_TITLE_RE.match(text) or paragraph.block_type == "toc_title":
+                if not text or is_toc_title_text(text) or paragraph.block_type == "toc_title":
                     continue
                 if paragraph.is_scene_break:
                     current.items.append({"type": "scene_break", "text": _scene_text(text, scene_break_style), "page_no": page_no})
@@ -251,8 +283,11 @@ def organize_entries_to_chapters(entries: List[Dict], scene_break_style: str = "
                     last_chapter_page = page_no
                     if t_key:
                         recent_chapter_pages[t_key] = page_no
+                elif paragraph.block_type == "divider":
+                    current.items.append({"type": "divider", "text": text, "level": 2, "page_no": page_no})
                 elif is_section_heading(paragraph):
-                    current.items.append({"type": "subheading", "text": text, "level": max(2, min(3, paragraph.heading_level or 2)), "page_no": page_no})
+                    item_type = "divider" if len(text) <= 12 else "subheading"
+                    current.items.append({"type": item_type, "text": text, "level": max(2, min(3, paragraph.heading_level or 2)), "page_no": page_no})
                 else:
                     current.items.append({"type": "paragraph", "spans": _copy_spans(paragraph), "page_no": page_no})
     flush()

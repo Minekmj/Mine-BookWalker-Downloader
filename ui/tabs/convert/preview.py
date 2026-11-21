@@ -90,6 +90,7 @@ class PreviewMixin():
             self.spin_page_input.setValue(0)
             self.lbl_total_pages.setText("/ 0")
             self.chk_preview_illust_trim.setVisible(False)
+            self.btn_preview_unmerge.setVisible(False)
             self._set_status_label(self.lbl_preview_type, "statusMute", "폴더를 선택하세요")
             self.preview_widget.set_image(None)
             return
@@ -116,6 +117,7 @@ class PreviewMixin():
         part_img = self._part_image(part)
         if part_img is None or self._part_is_blank(part):
             self.chk_preview_illust_trim.setVisible(False)
+            self.btn_preview_unmerge.setVisible(False)
             self.preview_widget.set_hover_only(False)
             self.preview_widget.set_cutline_enabled(False)
             self.preview_widget.set_image(part_img)
@@ -124,6 +126,7 @@ class PreviewMixin():
         if not self._is_novel():
             self.chk_preview_illustration.setVisible(False)
             self.chk_preview_illust_trim.setVisible(False)
+            self.btn_preview_unmerge.setVisible(False)
             self.preview_widget.set_hover_only(False)
             self.preview_widget.set_cutline_enabled(False)
             self.preview_widget.set_image(part_img)
@@ -135,6 +138,7 @@ class PreviewMixin():
             self.chk_preview_illust_trim.setChecked(trim_this)
             self.chk_preview_illust_trim.blockSignals(False)
             self.chk_preview_illust_trim.setVisible(True)
+            self.btn_preview_unmerge.setVisible(part.split_note == "양면 삽화 병합")
 
             r_params = self._render_params()
             render_part = SplitPart(
@@ -154,6 +158,7 @@ class PreviewMixin():
             self._set_status_label(self.lbl_preview_type, "statusWarn", f"{fname}{sub_label} · 삽화 ({part.analysis_reason})")
         else:
             self.chk_preview_illust_trim.setVisible(False)
+            self.btn_preview_unmerge.setVisible(False)
             self.preview_widget.set_hover_only(False)
             show_cut = self.chk_remove_header.isChecked() and str(self.combo_header_cut.currentData()) != "off" and not part.header_cut_applied
             self.preview_widget.set_cutline_enabled(show_cut)
@@ -238,9 +243,31 @@ class PreviewMixin():
         if self._cur_sub_idx >= len(parts):
             return
         part = parts[self._cur_sub_idx]
-        key = self._classification_key(self._cur_file_idx, self._cur_sub_idx, part)
-        self._classification_overrides[key] = bool(checked)
+        if part.split_note == "양면 삽화 병합" and not checked:
+            base_parts = self._base_parts(self._cur_file_idx)
+            removed = False
+            for idx, bp in enumerate(base_parts):
+                bkey = self._classification_key(self._cur_file_idx, idx, bp)
+                if self._classification_overrides.get(bkey) is True:
+                    del self._classification_overrides[bkey]
+                    removed = True
+            if not removed:
+                for idx, bp in enumerate(base_parts):
+                    bkey = self._classification_key(self._cur_file_idx, idx, bp)
+                    self._classification_overrides[bkey] = False
+        else:
+            key = self._classification_key(self._cur_file_idx, self._cur_sub_idx, part)
+            self._classification_overrides[key] = bool(checked)
         self.adv["classification_overrides"] = dict(self._classification_overrides)
+        self.settingsChanged.emit()
+        self._refresh_preview()
+
+    def _on_preview_unmerge_clicked(self):
+        if not self._preview_files or not self._is_novel():
+            return
+        fname = self._preview_files[self._cur_file_idx].name
+        self._illust_no_merge[fname] = True
+        self.adv["illust_no_merge"] = dict(self._illust_no_merge)
         self.settingsChanged.emit()
         self._refresh_preview()
 
@@ -439,4 +466,26 @@ class PreviewMixin():
                     is_blank=part.is_blank,
                 )
             overrides.append(part)
+        fname = self._preview_files[file_idx].name
+        if self._is_novel() and not self.chk_split_large.isChecked() and not self._illust_no_merge.get(fname, False) and len(overrides) > 1:
+            non_blank = [p for p in overrides if not self._part_is_blank(p)]
+            if len(non_blank) >= 2 and all(p.is_illustration for p in non_blank):
+                raw_img = load_image_rgb(self._preview_files[file_idx])
+                fp = image_fingerprint(raw_img)
+                blank = is_blank_image(raw_img)
+                merged = SplitPart(
+                    raw_img,
+                    "양면 삽화 병합",
+                    True,
+                    "분리된 양면 삽화 자동 병합",
+                    header_cut_applied=False,
+                    fingerprint=fp,
+                    is_blank=blank,
+                )
+                merged_key = self._classification_key(file_idx, 0, merged)
+                if merged_key in self._classification_overrides:
+                    val = bool(self._classification_overrides[merged_key])
+                    merged.is_illustration = val
+                    merged.analysis_reason = "사용자 지정 삽화" if val else "사용자 지정 본문"
+                return [merged]
         return overrides

@@ -45,6 +45,7 @@ class ProcessOptions:
     gemini_review_paragraphs: bool = True
     gemini_review_headings: bool = True
     gemini_review_toc: bool = True
+    gemini_review_illust_toc: bool = True
     gemini_review_duplicates: bool = True
     gemini_review_illustrations: bool = True
     gemini_review_passes: int = 2
@@ -62,6 +63,7 @@ class ProcessOptions:
     cover_crop_rect: Optional[tuple] = None
     classification_overrides: Optional[Dict[str, bool]] = None
     illust_trim_overrides: Optional[Dict[str, bool]] = None
+    illust_no_merge: Optional[Dict[str, bool]] = None
 
 
 @dataclass

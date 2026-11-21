@@ -51,7 +51,7 @@ class ImageRegistry:
         return rel
 
 
-def _render_items(chapter: EpubChapter, chapter_index: int, title_targets: Dict[str, str], registry: ImageRegistry):
+def _render_items(chapter: EpubChapter, chapter_index: int, title_targets: Dict[str, str], registry: ImageRegistry, register_dividers: bool = False):
     body = []
     subsections = []
     heading_added = False
@@ -64,6 +64,14 @@ def _render_items(chapter: EpubChapter, chapter_index: int, title_targets: Dict[
             if heading_text:
                 body.append(f'<h1 id="{heading_id}" class="chapter-title">{_xml_safe(heading_text)}</h1>')
                 heading_added = True
+        elif item_type == "divider":
+            section_index += 1
+            section_id = f"section-{chapter_index:03d}-{section_index:03d}"
+            section_text = str(item.get("text", "") or "").strip()
+            if section_text:
+                body.append(f'<div id="{section_id}" class="section-divider">{_xml_safe(section_text)}</div>')
+                if register_dividers:
+                    subsections.append((2, section_id, section_text))
         elif item_type == "subheading":
             section_index += 1
             level = max(2, min(3, int(item.get("level", 2))))
@@ -97,10 +105,16 @@ def _render_items(chapter: EpubChapter, chapter_index: int, title_targets: Dict[
     return body, subsections, heading_added
 
 
-def render_chapter_xhtml(chapter: EpubChapter, chapter_index: int, title_targets: Dict[str, str], registry: ImageRegistry) -> Tuple[Optional[str], List]:
-    body, subsections, heading_added = _render_items(chapter, chapter_index, title_targets, registry)
+def render_chapter_xhtml(chapter: EpubChapter, chapter_index: int, title_targets: Dict[str, str], registry: ImageRegistry, register_dividers: bool = False) -> Tuple[Optional[str], List]:
+    body, subsections, heading_added = _render_items(chapter, chapter_index, title_targets, registry, register_dividers=register_dividers)
     if not heading_added and chapter.title and chapter.title.strip():
-        body.insert(0, f'<h1 id="chapter-title" class="chapter-title">{_xml_safe(chapter.title)}</h1>')
+        if getattr(chapter, "hide_heading", False):
+            if body and body[0].startswith('<div class="illust-wrap">'):
+                body[0] = body[0].replace('<div class="illust-wrap">', '<div id="chapter-title" class="illust-wrap">', 1)
+            else:
+                body.insert(0, '<div id="chapter-title"></div>')
+        else:
+            body.insert(0, f'<h1 id="chapter-title" class="chapter-title">{_xml_safe(chapter.title)}</h1>')
     if not body:
         return None, subsections
     chapter_title = str(chapter.title or "").strip()

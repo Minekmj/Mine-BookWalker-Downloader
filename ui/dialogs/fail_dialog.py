@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from ui.panels.gemini_panel import GEMINI_MODEL_PRESETS
 
+
 class FailureReviewDialog(QDialog):
     def __init__(self, payload: dict, current_settings: dict, parent=None):
         super().__init__(parent)
@@ -39,6 +40,7 @@ class FailureReviewDialog(QDialog):
         )
         lbl_info = QLabel(info_text)
         lbl_info.setObjectName("statusWarn")
+        lbl_info.setWordWrap(True)
         root.addWidget(lbl_info)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)

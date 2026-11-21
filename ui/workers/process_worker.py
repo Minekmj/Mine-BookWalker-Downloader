@@ -34,6 +34,7 @@ class ProcessWorker(EntryMixin, NovelMixin, ReviewMixin, QThread):
     token_usage = Signal(int, int, int)
     log = Signal(str)
     review_needed = Signal(object)
+    correction_preview_needed = Signal(object)
     finished_ok = Signal(str)
     failed = Signal(str)
 
@@ -57,6 +58,12 @@ class ProcessWorker(EntryMixin, NovelMixin, ReviewMixin, QThread):
     def _ask_user_review(self, payload: Dict) -> Dict:
         self._review_event.clear()
         self.review_needed.emit(payload)
+        self._review_event.wait()
+        return self._review_decision
+
+    def _ask_user_correction_preview(self, payload: Dict) -> Dict:
+        self._review_event.clear()
+        self.correction_preview_needed.emit(payload)
         self._review_event.wait()
         return self._review_decision
 
@@ -108,7 +115,7 @@ class ProcessWorker(EntryMixin, NovelMixin, ReviewMixin, QThread):
                 else:
                     parts = compute_base_parts(source, index == 0, self.opts.mode != "manga", pipeline_params)
                 overrides = self.opts.classification_overrides or {}
-                part_entries = []
+                resolved_items = []
                 for part_index, part in enumerate(parts):
                     fp = image_fingerprint(part.image)
                     blank = is_blank_image(part.image)
@@ -118,6 +125,31 @@ class ProcessWorker(EntryMixin, NovelMixin, ReviewMixin, QThread):
                     if key in overrides:
                         is_illustration = bool(overrides[key])
                         analysis_reason = "사용자 지정 삽화" if is_illustration else "사용자 지정 본문"
+                    resolved_items.append((part_index, part, fp, blank, is_illustration, analysis_reason))
+
+                no_merge = self.opts.illust_no_merge or {}
+                if self.opts.mode == "novel" and not self.opts.split_large_images and not no_merge.get(path.name, False) and len(resolved_items) > 1:
+                    non_blank = [item for item in resolved_items if not item[3]]
+                    if len(non_blank) >= 2 and all(item[4] for item in non_blank):
+                        fp = image_fingerprint(source)
+                        blank = is_blank_image(source)
+                        key = f"{path.name}::0::{fp}"
+                        is_illustration = True
+                        analysis_reason = "분리된 양면 삽화 자동 병합"
+                        if key in overrides:
+                            is_illustration = bool(overrides[key])
+                            analysis_reason = "사용자 지정 삽화" if is_illustration else "사용자 지정 본문"
+                        merged_part = SplitPart(
+                            source,
+                            "양면 삽화 병합",
+                            is_illustration,
+                            analysis_reason,
+                            header_cut_applied=False,
+                        )
+                        resolved_items = [(0, merged_part, fp, blank, is_illustration, analysis_reason)]
+
+                part_entries = []
+                for part_index, part, fp, blank, is_illustration, analysis_reason in resolved_items:
                     part_path = None
                     if not blank:
                         part_path = save_tmp_image(part.image, run_tmp / f"part_{index:05d}_{part_index:02d}.png")

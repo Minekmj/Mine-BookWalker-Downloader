@@ -70,6 +70,7 @@ class SettingsMixin():
         self.btn_next_illustration.setEnabled(is_novel)
         self.chk_preview_illustration.setVisible(is_novel)
         self.chk_preview_illust_trim.setVisible(False)
+        self.btn_preview_unmerge.setVisible(False)
         self.chk_trim.setEnabled(is_novel)
         self.chk_small_illust.setEnabled(is_novel)
         self.chk_trim_before_illust.setEnabled(is_novel)
@@ -137,6 +138,7 @@ class SettingsMixin():
             "cover_crop_rect": list(self._cover_crop_rect) if self._cover_crop_rect else None,
             "classification_overrides": dict(self._classification_overrides),
             "illust_trim_overrides": dict(self._illust_trim_overrides),
+            "illust_no_merge": dict(self._illust_no_merge),
         }
 
     def apply_settings(self, s: Dict):
@@ -170,4 +172,5 @@ class SettingsMixin():
         self.chk_cover_crop.setChecked(bool(s.get("cover_crop_enabled", False) and self._cover_crop_rect))
         self._classification_overrides = dict(s.get("classification_overrides", {}) or {})
         self._illust_trim_overrides = dict(s.get("illust_trim_overrides", {}) or {})
+        self._illust_no_merge = dict(s.get("illust_no_merge", {}) or {})
         self._refresh_preview()

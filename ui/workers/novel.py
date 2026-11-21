@@ -59,17 +59,20 @@ class NovelMixin():
                 self.log.emit(f"백업을 읽지 못해 새로 인식합니다: {exc}")
 
         text_targets = []
+        all_text_targets = []
         text_meta = {}
         illust_items = []
+        backup_failed_pages = {}
         for page_no, (source_name, part_index, part, part_path, fp, blank) in enumerate(expanded_parts, start=1):
             if blank or part_path is None:
                 continue
             source_key = source_keys[page_no]
-            if page_no in entries_map:
+            in_backup = page_no in entries_map
+            if in_backup and entries_map[page_no].get("type") == "illustration":
                 continue
-            if part.is_illustration:
+            if not in_backup and part.is_illustration:
                 illust_items.append((page_no, source_name, part_index, part, part_path, fp, source_key))
-            else:
+            elif not part.is_illustration or in_backup:
                 def make_loader(p_path=part_path, meta_p=part):
                     raw = load_image_rgb(p_path)
                     temp_part = SplitPart(
@@ -83,8 +86,12 @@ class NovelMixin():
                     )
                     return prepare_text_ocr_image(temp_part, pipeline_params)
 
-                text_targets.append((page_no, make_loader))
+                all_text_targets.append((page_no, make_loader))
                 text_meta[page_no] = (source_name, part_index, part, source_key, make_loader, fp)
+                if not in_backup:
+                    text_targets.append((page_no, make_loader))
+                elif entries_map[page_no].get("ocr_error"):
+                    backup_failed_pages[page_no] = str(entries_map[page_no].get("ocr_error", ""))
 
         if illust_items:
             ill_total = len(illust_items)
@@ -92,6 +99,10 @@ class NovelMixin():
             self.progress.emit(0, ill_total)
             for idx, (page_no, source_name, part_index, part, part_path, fp, source_key) in enumerate(illust_items, start=1):
                 if self._cancelled:
+                    if entries_map:
+                        save_ocr_backup(backup_dir, [entries_map[index] for index in sorted(entries_map)])
+                        self.log.emit(f"중단됨 · 백업 저장 완료 ({backup_json})")
+                    self.finished_ok.emit(f"중지됨 · 백업 저장 완료 ({backup_json})")
                     return
                 override_key = f"{source_name}::{part_index}::{fp}"
                 raw_img = load_image_rgb(part_path)
@@ -151,10 +162,21 @@ class NovelMixin():
                     save_ocr_backup(backup_dir, [entries_map[index] for index in sorted(entries_map)])
                     self._emit_token_usage(transcriber)
 
-            _, failed_pages = transcriber.transcribe_pages_parallel(text_targets, batch_size=max(1, int(self.opts.gemini_batch_size)), max_concurrent=self.opts.gemini_max_concurrent, on_batch_done=save_batch, log_cb=self.log.emit, cancelled_fn=lambda: self._cancelled)
-            if self._cancelled:
-                save_ocr_backup(backup_dir, [entries_map[index] for index in sorted(entries_map)])
+            try:
+                _, failed_pages = transcriber.transcribe_pages_parallel(text_targets, batch_size=max(1, int(self.opts.gemini_batch_size)), max_concurrent=self.opts.gemini_max_concurrent, on_batch_done=save_batch, log_cb=self.log.emit, cancelled_fn=lambda: self._cancelled)
+            except InterruptedError:
+                with lock:
+                    save_ocr_backup(backup_dir, [entries_map[index] for index in sorted(entries_map)])
                 self._emit_token_usage(transcriber)
+                self.log.emit(f"OCR 중단됨 · 백업 저장 완료 ({backup_json})")
+                self.finished_ok.emit(f"중지됨 · 백업 저장 완료 ({backup_json})")
+                return
+            if self._cancelled:
+                with lock:
+                    save_ocr_backup(backup_dir, [entries_map[index] for index in sorted(entries_map)])
+                self._emit_token_usage(transcriber)
+                self.log.emit(f"OCR 중단됨 · 백업 저장 완료 ({backup_json})")
+                self.finished_ok.emit(f"중지됨 · 백업 저장 완료 ({backup_json})")
                 return
             for page_no, error in failed_pages.items():
                 source_name, part_index, part, source_key, _, fp = text_meta[page_no]
@@ -175,12 +197,16 @@ class NovelMixin():
             ocr_usage = transcriber.get_token_usage()
             self._emit_token_usage(transcriber)
             self.log.emit(f"OCR 토큰 사용량 · 입력 {ocr_usage['input_tokens']:,} / 출력 {ocr_usage['output_tokens']:,} (합계 {ocr_usage['total_tokens']:,})")
-            self._review_ocr_anomalies(transcriber, text_targets, text_meta, entries_map, failed_pages, ocr_ink_ratios=ocr_ink_ratios, ocr_used_temps=ocr_used_temps)
         else:
             self.progress_stage.emit("2/5 OCR 백업 재사용")
             self.progress.emit(1, 1)
 
+        failed_pages.update(backup_failed_pages)
+        if all_text_targets and not self._cancelled:
+            self._review_ocr_anomalies(transcriber, all_text_targets, text_meta, entries_map, failed_pages, ocr_ink_ratios=ocr_ink_ratios, ocr_used_temps=ocr_used_temps)
+
         text_targets.clear()
+        all_text_targets.clear()
         text_meta.clear()
 
         if self._cancelled:
