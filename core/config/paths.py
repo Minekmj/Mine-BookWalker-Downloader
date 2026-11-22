@@ -1,9 +1,10 @@
 import ctypes
 import os
-from pathlib import Path
 import shutil
 
-ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+from path_clean import get_app_dir
+
+ROOT_DIR = get_app_dir()
 OUT_ROOT = ROOT_DIR / "out"
 
 DIR_OUT = OUT_ROOT / "out"

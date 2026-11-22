@@ -5,5 +5,8 @@ out/
 .vscode/
 __pycache__/
 tmp/
+build/
+dist/
+.venv/
 
 settings.json

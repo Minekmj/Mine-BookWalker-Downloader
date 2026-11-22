@@ -62,9 +62,15 @@ Epub 혹은 Pdf로 변환하는 데스크톱 프로그램입니다.
 
 ## 다운로드
 
-### Windows ZIP
+### Windows EXE
 
-Python이나 별도의 개발 환경을 설치하지 않고 바로 실행하려면 ZIP 버전을 사용할 수 있습니다.
+Python이나 별도의 개발 환경을 설치하지 않고 바로 실행하려면 EXE 버전을 사용할 수 있습니다.
+
+1. [최신 릴리스(Releases)](https://github.com/Minekmj/Mine-BookWalker-Downloader/releases) 페이지에서 최신 `.exe` 파일을 다운로드합니다.
+2. 새로운 폴더를 만들고 거기에 다운받은 `.exe` 파일을 넣습니다.
+3. `Mine BookWalker DownLoader.exe`를 실행합니다.
+
+* 처음 실행 시 만일 에러 문제가 날 시, 윈도우에서 자동으로 바이너리 데이터를 지운 것으로 직접 환경을 세팅하여 아래 방법을 이용하세요.
 
 <br/>
 

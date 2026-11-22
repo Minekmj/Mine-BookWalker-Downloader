@@ -1,6 +1,6 @@
-from pathlib import Path
+from path_clean import resource_path
 
-SCRIPT_PATH = Path(__file__).resolve().parent / "js" / "web_script.js"
+SCRIPT_PATH = resource_path("ui", "tabs", "web_script", "js", "web_script.js")
 
 
 def render_web_script(*, dpr: int, idle_ms: int, min_wait_ms: int, start_page: int, port: int) -> str:

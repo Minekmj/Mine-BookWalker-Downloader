@@ -244,7 +244,7 @@ class LayoutMixin():
 
         self.btn_find_text = QPushButton("다음 본문")
         self.btn_find_text.clicked.connect(self._find_next_text_page)
-        self.btn_next_illustration = QPushButton("다음 삽화 →")
+        self.btn_next_illustration = QPushButton("다음 삽화")
         self.btn_next_illustration.clicked.connect(self._find_next_illustration)
         nav.addWidget(self.btn_prev_page)
         nav.addWidget(self.spin_page_input)
