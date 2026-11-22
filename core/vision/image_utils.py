@@ -201,3 +201,18 @@ def crop_illustration_bounds(img: Image.Image, padding_ratio: float = 0.006) -> 
     rgb = img if img.mode == "RGB" else img.convert("RGB")
     bounds = detect_illustration_bounds(rgb, padding_ratio)
     return rgb.crop(bounds) if bounds != (0, 0, rgb.width, rgb.height) else rgb
+def crop_side_pct(
+    img: Image.Image,
+    left_pct: float = 0.0,
+    right_pct: float = 0.0,
+) -> Image.Image:
+    lp = max(0.0, min(49.0, float(left_pct)))
+    rp = max(0.0, min(49.0, float(right_pct)))
+    if lp <= 0.0 and rp <= 0.0:
+        return img
+    w, h = img.size
+    x1 = int(round(w * lp / 100.0))
+    x2 = w - int(round(w * rp / 100.0))
+    if x2 - x1 < 10:
+        return img
+    return img.crop((x1, 0, x2, h))

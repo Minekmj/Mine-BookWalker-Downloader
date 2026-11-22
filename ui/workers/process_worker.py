@@ -20,7 +20,7 @@ from core.vision.image_utils import (
     save_tmp_image,
 )
 from core.vision.novel_detector import SplitPart
-from core.vision.page_pipeline import compute_base_parts, render_illustration_image
+from core.vision.page_pipeline import compute_base_parts, default_illust_trim_enabled, render_illustration_image, split_illustration_side_crop
 from core.config.paths import SESSION_TMP
 from ui.workers.entries import EntryMixin
 from ui.workers.novel import NovelMixin
@@ -148,8 +148,36 @@ class ProcessWorker(EntryMixin, NovelMixin, ReviewMixin, QThread):
                         )
                         resolved_items = [(0, merged_part, fp, blank, is_illustration, analysis_reason)]
 
-                part_entries = []
+                side_crops = self.opts.illust_side_crops or {}
+                trim_overrides = self.opts.illust_trim_overrides or {}
+                expanded_items = []
                 for part_index, part, fp, blank, is_illustration, analysis_reason in resolved_items:
+                    key = f"{path.name}::{part_index}::{fp}"
+                    sc = side_crops.get(key)
+                    if self.opts.mode == "novel" and is_illustration and not blank and sc and len(sc) == 2 and (float(sc[0]) > 0.0 or float(sc[1]) > 0.0):
+                        src_part = SplitPart(
+                            part.image,
+                            part.split_note,
+                            True,
+                            analysis_reason,
+                            header_cut_applied=part.header_cut_applied,
+                            detected_header_cut_y=part.detected_header_cut_y,
+                            is_mini_illust=part.is_mini_illust,
+                        )
+                        split_parts = split_illustration_side_crop(
+                            src_part,
+                            side_crop=(float(sc[0]), float(sc[1])),
+                            origin_key=key,
+                        )
+                        for sp in split_parts:
+                            sp_fp = image_fingerprint(sp.image)
+                            sp_blank = is_blank_image(sp.image)
+                            expanded_items.append((sp, sp_fp, sp_blank, sp.is_illustration, sp.analysis_reason))
+                    else:
+                        expanded_items.append((part, fp, blank, is_illustration, analysis_reason))
+
+                part_entries = []
+                for part_index, (part, fp, blank, is_illustration, analysis_reason) in enumerate(expanded_items):
                     part_path = None
                     if not blank:
                         part_path = save_tmp_image(part.image, run_tmp / f"part_{index:05d}_{part_index:02d}.png")
@@ -164,6 +192,8 @@ class ProcessWorker(EntryMixin, NovelMixin, ReviewMixin, QThread):
                         image_path=part_path,
                         fingerprint=fp,
                         is_blank=blank,
+                        side_crop_origin_key=part.side_crop_origin_key,
+                        side_crop_applied=part.side_crop_applied,
                     )
                     part_entries.append((part_index, meta, part_path, fp, blank))
                 return index, part_entries
@@ -228,11 +258,13 @@ class ProcessWorker(EntryMixin, NovelMixin, ReviewMixin, QThread):
         header_cut_applied: bool = False,
         trim_override: Optional[bool] = None,
         is_mini_illust: bool = False,
+        side_crop=None,
+        side_crop_applied: bool = False,
     ):
-        if self.opts.mode == "manga":
+        if self.opts.mode == "manga" or side_crop_applied:
             return raw_image.convert("RGB")
         part = SplitPart(raw_image, "", True, "", header_cut_applied=header_cut_applied, is_mini_illust=is_mini_illust)
-        return render_illustration_image(part, self._pipeline_params(), trim_override=trim_override)
+        return render_illustration_image(part, self._pipeline_params(), trim_override=trim_override, side_crop=side_crop)
 
     def _run_manga(self, expanded_parts: List[tuple], workers: int):
         page_paths = [

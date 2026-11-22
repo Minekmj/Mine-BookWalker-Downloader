@@ -51,6 +51,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     ],
     "classification_overrides": {},
     "illust_trim_overrides": {},
+    "illust_side_crops": {},
     "illust_no_merge": {},
     "gemini_api_keys": "",
     "gemini_model": "gemini-3.1-flash-lite",

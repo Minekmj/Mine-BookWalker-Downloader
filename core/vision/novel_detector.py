@@ -35,6 +35,8 @@ class SplitPart:
     image_path: Optional[Path] = None
     fingerprint: str = ""
     is_blank: Optional[bool] = None
+    side_crop_origin_key: str = ""
+    side_crop_applied: bool = False
 
 
 def analyze_novel_page(

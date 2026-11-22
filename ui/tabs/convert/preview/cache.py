@@ -14,7 +14,7 @@ from core.vision.image_utils import (
     save_tmp_image,
 )
 from core.vision.novel_detector import SplitPart
-from core.vision.page_pipeline import compute_base_parts
+from core.vision.page_pipeline import compute_base_parts, split_illustration_side_crop
 from ui.workers.analysis_worker import PageAnalysisWorker
 
 
@@ -186,5 +186,40 @@ class PreviewCacheMixin:
                     val = bool(self._classification_overrides[merged_key])
                     merged.is_illustration = val
                     merged.analysis_reason = "사용자 지정 삽화" if val else "사용자 지정 본문"
-                return [merged]
-        return overrides
+                return self._apply_side_crops_to_parts(file_idx, [merged])
+        return self._apply_side_crops_to_parts(file_idx, overrides)
+
+    def _apply_side_crops_to_parts(self, file_idx: int, parts: List[SplitPart]) -> List[SplitPart]:
+        if not self._is_novel():
+            return parts
+        if getattr(self, "_side_crop_editing", False) and file_idx == self._cur_file_idx:
+            return parts
+        r_params = self._render_params()
+        expanded: List[SplitPart] = []
+        for idx, part in enumerate(parts):
+            key = self._classification_key(file_idx, idx, part)
+            sc = self._illust_side_crops.get(key)
+            if part.is_illustration and sc and len(sc) == 2 and (float(sc[0]) > 0.0 or float(sc[1]) > 0.0):
+                part_img = self._part_image(part)
+                if part_img is not None and not self._part_is_blank(part):
+                    src_part = SplitPart(
+                        part_img,
+                        part.split_note,
+                        part.is_illustration,
+                        part.analysis_reason,
+                        header_cut_applied=part.header_cut_applied,
+                        detected_header_cut_y=part.detected_header_cut_y,
+                        is_mini_illust=part.is_mini_illust,
+                    )
+                    split_parts = split_illustration_side_crop(
+                        src_part,
+                        side_crop=(float(sc[0]), float(sc[1])),
+                        origin_key=key,
+                    )
+                    for sp in split_parts:
+                        sp.fingerprint = image_fingerprint(sp.image)
+                        sp.is_blank = is_blank_image(sp.image)
+                    expanded.extend(split_parts)
+                    continue
+            expanded.append(part)
+        return expanded

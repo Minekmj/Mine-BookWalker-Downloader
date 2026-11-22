@@ -5,6 +5,12 @@ from core.vision.page_pipeline import render_illustration_image
 
 
 class PreviewViewerMixin:
+    def _hide_side_crop_controls(self):
+        self.chk_preview_side_crop.setVisible(False)
+        self.btn_side_crop_apply.setVisible(False)
+        self.btn_side_crop_cancel.setVisible(False)
+        self.preview_widget.set_side_crop_enabled(False)
+
     def _refresh_preview(self):
         total_files = len(self._preview_files)
         if total_files == 0:
@@ -13,6 +19,7 @@ class PreviewViewerMixin:
             self.lbl_total_pages.setText("/ 0")
             self.chk_preview_illust_trim.setVisible(False)
             self.btn_preview_unmerge.setVisible(False)
+            self._hide_side_crop_controls()
             self._set_status_label(self.lbl_preview_type, "statusMute", "폴더를 선택하세요")
             self.preview_widget.set_image(None)
             return
@@ -40,6 +47,7 @@ class PreviewViewerMixin:
         if part_img is None or self._part_is_blank(part):
             self.chk_preview_illust_trim.setVisible(False)
             self.btn_preview_unmerge.setVisible(False)
+            self._hide_side_crop_controls()
             self.preview_widget.set_hover_only(False)
             self.preview_widget.set_cutline_enabled(False)
             self.preview_widget.set_image(part_img)
@@ -49,6 +57,7 @@ class PreviewViewerMixin:
             self.chk_preview_illustration.setVisible(False)
             self.chk_preview_illust_trim.setVisible(False)
             self.btn_preview_unmerge.setVisible(False)
+            self._hide_side_crop_controls()
             self.preview_widget.set_hover_only(False)
             self.preview_widget.set_cutline_enabled(False)
             self.preview_widget.set_image(part_img)
@@ -62,6 +71,17 @@ class PreviewViewerMixin:
             self.chk_preview_illust_trim.setVisible(True)
             self.btn_preview_unmerge.setVisible(part.split_note == "양면 삽화 병합")
 
+            key = part.side_crop_origin_key or self._classification_key(self._cur_file_idx, self._cur_sub_idx, part)
+            saved_crop = self._illust_side_crops.get(key)
+            has_saved_crop = bool(saved_crop and len(saved_crop) == 2 and (float(saved_crop[0]) > 0.0 or float(saved_crop[1]) > 0.0))
+
+            self.chk_preview_side_crop.blockSignals(True)
+            self.chk_preview_side_crop.setChecked(self._side_crop_editing)
+            self.chk_preview_side_crop.blockSignals(False)
+            self.chk_preview_side_crop.setVisible(True)
+            self.btn_side_crop_apply.setVisible(self._side_crop_editing)
+            self.btn_side_crop_cancel.setVisible(self._side_crop_editing or has_saved_crop)
+
             r_params = self._render_params()
             render_part = SplitPart(
                 part_img,
@@ -72,15 +92,29 @@ class PreviewViewerMixin:
                 detected_header_cut_y=part.detected_header_cut_y,
                 is_mini_illust=part.is_mini_illust,
             )
-            display_image = render_illustration_image(render_part, r_params, trim_override=trim_this)
-            show_cut = r_params["remove_text_header"] and r_params["crop_illustrations"] and r_params["header_cut_mode"] != "off" and not part.header_cut_applied
-            self.preview_widget.set_hover_only(True)
-            self.preview_widget.set_cutline_enabled(show_cut)
-            self.preview_widget.set_image(display_image, edit_image=part_img)
+            if self._side_crop_editing:
+                self.preview_widget.set_hover_only(False)
+                self.preview_widget.set_cutline_enabled(False)
+                self.preview_widget.set_side_crop_pcts(self._side_crop_pending[0], self._side_crop_pending[1])
+                self.preview_widget.set_side_crop_enabled(True)
+                self.preview_widget.set_image(part_img)
+            else:
+                display_image = render_illustration_image(
+                    render_part,
+                    r_params,
+                    trim_override=trim_this,
+                    side_crop=None,
+                )
+                show_cut = r_params["remove_text_header"] and r_params["crop_illustrations"] and r_params["header_cut_mode"] != "off" and not part.header_cut_applied
+                self.preview_widget.set_side_crop_enabled(False)
+                self.preview_widget.set_hover_only(True)
+                self.preview_widget.set_cutline_enabled(show_cut)
+                self.preview_widget.set_image(display_image, edit_image=part_img)
             self._set_status_label(self.lbl_preview_type, "statusWarn", f"{fname}{sub_label} · 삽화 ({part.analysis_reason})")
         else:
             self.chk_preview_illust_trim.setVisible(False)
             self.btn_preview_unmerge.setVisible(False)
+            self._hide_side_crop_controls()
             self.preview_widget.set_hover_only(False)
             show_cut = self.chk_remove_header.isChecked() and str(self.combo_header_cut.currentData()) != "off" and not part.header_cut_applied
             self.preview_widget.set_cutline_enabled(show_cut)
@@ -89,6 +123,7 @@ class PreviewViewerMixin:
 
     def _on_page_spin_changed(self, val: int):
         if 1 <= val <= len(self._preview_files):
+            self._side_crop_editing = False
             self._cur_file_idx = val - 1
             self._cur_sub_idx = 0
             self._refresh_preview()
@@ -104,6 +139,7 @@ class PreviewViewerMixin:
     def _prev_preview_page(self):
         if not self._preview_files:
             return
+        self._side_crop_editing = False
         if self._cur_sub_idx > 0:
             self._cur_sub_idx -= 1
         elif self._cur_file_idx > 0:
@@ -115,6 +151,7 @@ class PreviewViewerMixin:
     def _next_preview_page(self):
         if not self._preview_files:
             return
+        self._side_crop_editing = False
         cur_parts = self._resolve_file_parts(self._cur_file_idx)
         if self._cur_sub_idx + 1 < len(cur_parts):
             self._cur_sub_idx += 1
@@ -134,6 +171,7 @@ class PreviewViewerMixin:
             for s_idx in range(start_s, len(parts)):
                 part = parts[s_idx]
                 if not self._part_is_blank(part) and not part.is_illustration:
+                    self._side_crop_editing = False
                     self._cur_file_idx = f_idx
                     self._cur_sub_idx = s_idx
                     self._refresh_preview()
@@ -152,6 +190,7 @@ class PreviewViewerMixin:
             for part_index in range(start_sub, len(parts)):
                 part = parts[part_index]
                 if not self._part_is_blank(part) and part.is_illustration:
+                    self._side_crop_editing = False
                     self._cur_file_idx = file_index
                     self._cur_sub_idx = part_index
                     self._refresh_preview()

@@ -27,6 +27,7 @@ class NovelMixin():
         entries_map = {}
         source_keys = {}
         trim_overrides = self.opts.illust_trim_overrides or {}
+        side_crops = self.opts.illust_side_crops or {}
         pipeline_params = self._pipeline_params()
         path_by_page: Dict[int, Path] = {}
         part_meta_by_page: Dict[int, tuple] = {}
@@ -43,6 +44,7 @@ class NovelMixin():
                 part,
                 trim_override=trim_overrides.get(override_key),
                 fingerprint=fp,
+                side_crop=side_crops.get(override_key),
             )
 
         if self.opts.resume_from_backup and backup_json.is_file():
@@ -117,6 +119,7 @@ class NovelMixin():
                     raw_image=raw_img,
                     fingerprint=fp,
                     save_dir=run_tmp,
+                    side_crop=side_crops.get(override_key),
                 )
                 self.log.emit(f"[{page_no}/{total}] 로컬 삽화 판정: {part.analysis_reason}")
                 self.progress_stage.emit(f"2/5 삽화 정리 ({idx}/{ill_total})")

@@ -153,3 +153,67 @@ class PreviewActionsMixin:
         self.spin_header_top.setValue(top_pct)
         self.spin_header_top.blockSignals(False)
         self.settingsChanged.emit()
+
+    def _on_preview_side_crop_toggled(self, checked: bool):
+        if not self._preview_files or not self._is_novel():
+            return
+        parts = self._resolve_file_parts(self._cur_file_idx)
+        if self._cur_sub_idx >= len(parts):
+            return
+        part = parts[self._cur_sub_idx]
+        key = part.side_crop_origin_key or self._classification_key(self._cur_file_idx, self._cur_sub_idx, part)
+        saved = self._illust_side_crops.get(key)
+        if checked:
+            if saved and len(saved) == 2:
+                self._side_crop_pending = (float(saved[0]), float(saved[1]))
+                if part.side_crop_origin_key and float(saved[1]) > 0.0:
+                    self._cur_sub_idx = max(0, self._cur_sub_idx - 1)
+            else:
+                self._side_crop_pending = (0.0, 0.0)
+            self._side_crop_editing = True
+        else:
+            self._side_crop_editing = False
+            if saved and len(saved) == 2 and float(saved[1]) > 0.0:
+                self._cur_sub_idx += 1
+        self._refresh_preview()
+
+    def _on_preview_side_crop_dragged(self, left_pct: float, right_pct: float):
+        self._side_crop_pending = (float(left_pct), float(right_pct))
+
+    def _on_side_crop_apply(self):
+        if not self._preview_files or not self._is_novel():
+            return
+        parts = self._resolve_file_parts(self._cur_file_idx)
+        if self._cur_sub_idx >= len(parts):
+            return
+        part = parts[self._cur_sub_idx]
+        key = self._classification_key(self._cur_file_idx, self._cur_sub_idx, part)
+        lp, rp = self._side_crop_pending
+        if lp > 0.0 or rp > 0.0:
+            self._illust_side_crops[key] = [lp, rp]
+            if rp > 0.0:
+                self._cur_sub_idx += 1
+        else:
+            self._illust_side_crops.pop(key, None)
+        self.adv["illust_side_crops"] = dict(self._illust_side_crops)
+        self._side_crop_editing = False
+        self.settingsChanged.emit()
+        self._refresh_preview()
+
+    def _on_side_crop_cancel(self):
+        if not self._preview_files or not self._is_novel():
+            return
+        parts = self._resolve_file_parts(self._cur_file_idx)
+        if self._cur_sub_idx >= len(parts):
+            return
+        part = parts[self._cur_sub_idx]
+        key = part.side_crop_origin_key or self._classification_key(self._cur_file_idx, self._cur_sub_idx, part)
+        was_split = bool(part.side_crop_origin_key)
+        old_saved = self._illust_side_crops.pop(key, None)
+        if was_split and old_saved and len(old_saved) == 2 and float(old_saved[1]) > 0.0:
+            self._cur_sub_idx = max(0, self._cur_sub_idx - 1)
+        self.adv["illust_side_crops"] = dict(self._illust_side_crops)
+        self._side_crop_pending = (0.0, 0.0)
+        self._side_crop_editing = False
+        self.settingsChanged.emit()
+        self._refresh_preview()

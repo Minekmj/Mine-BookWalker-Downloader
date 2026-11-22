@@ -17,6 +17,7 @@ class EntryMixin():
         part: SplitPart,
         trim_override: Optional[bool] = None,
         fingerprint: Optional[str] = None,
+        side_crop: Optional[tuple] = None,
     ) -> str:
         default_trim = False if getattr(part, "is_mini_illust", False) else self.opts.trim_enabled
         effective_trim = default_trim if trim_override is None else bool(trim_override)
@@ -46,6 +47,7 @@ class EntryMixin():
             self.opts.gemini_model,
             self.opts.ocr_language,
             self.opts.ocr_orientation,
+            (round(float(side_crop[0]), 1), round(float(side_crop[1]), 1)) if side_crop and len(side_crop) == 2 else (0.0, 0.0),
         )
         return hashlib.sha256(repr(payload).encode("utf-8")).hexdigest()
 
@@ -116,6 +118,7 @@ class EntryMixin():
         raw_image=None,
         fingerprint: Optional[str] = None,
         save_dir: Optional[Path] = None,
+        side_crop: Optional[tuple] = None,
     ):
         src_img = raw_image if raw_image is not None else part.image
         fp = fingerprint or part.fingerprint or image_fingerprint(src_img)
@@ -124,6 +127,8 @@ class EntryMixin():
             header_cut_applied=bool(part.header_cut_applied),
             trim_override=trim_override,
             is_mini_illust=bool(getattr(part, "is_mini_illust", False)),
+            side_crop=side_crop,
+            side_crop_applied=bool(getattr(part, "side_crop_applied", False)),
         )
         img_size = list(prepared.size)
         if save_dir is not None:

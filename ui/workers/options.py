@@ -67,6 +67,7 @@ class ProcessOptions:
     cover_crop_rect: Optional[tuple] = None
     classification_overrides: Optional[Dict[str, bool]] = None
     illust_trim_overrides: Optional[Dict[str, bool]] = None
+    illust_side_crops: Optional[Dict[str, list]] = None
     illust_no_merge: Optional[Dict[str, bool]] = None
 
 

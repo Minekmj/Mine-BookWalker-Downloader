@@ -1,9 +1,9 @@
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from PIL import Image
 
 from core.vision.header_cut import cut_header
-from core.vision.image_utils import crop_illustration_bounds, trim_white_margins
+from core.vision.image_utils import crop_illustration_bounds, crop_side_pct, trim_white_margins
 from core.vision.novel_detector import SplitPart, resolve_split_pages
 from core.vision.part_splitter import auto_separate_parts
 
@@ -55,6 +55,7 @@ def render_illustration_image(
     part: SplitPart,
     params: dict,
     trim_override: Optional[bool] = None,
+    side_crop: Optional[Tuple[float, float]] = None,
 ) -> Image.Image:
     image = part.image.convert("RGB")
     if params.get("crop_illustrations", False) and params.get("remove_text_header", True) and not part.header_cut_applied:
@@ -76,6 +77,8 @@ def render_illustration_image(
             white_threshold=int(params.get("white_threshold", 240)),
             padding=int(params.get("trim_padding", 1)),
         )
+    if side_crop and len(side_crop) == 2:
+        image = crop_side_pct(image, float(side_crop[0]), float(side_crop[1]))
     return image
 
 
@@ -93,3 +96,64 @@ def prepare_text_ocr_image(part: SplitPart, params: dict) -> Image.Image:
         mode,
         False,
     )
+def split_illustration_side_crop(
+    part: SplitPart,
+    side_crop: Optional[Tuple[float, float]] = None,
+    origin_key: str = "",
+) -> List[SplitPart]:
+    if not side_crop or len(side_crop) != 2 or part.image is None:
+        return [part]
+    lp = max(0.0, min(49.0, float(side_crop[0])))
+    rp = max(0.0, min(49.0, float(side_crop[1])))
+    if lp <= 0.0 and rp <= 0.0:
+        return [part]
+
+    base_img = part.image.convert("RGB")
+    w, h = base_img.size
+    x1 = int(round(w * lp / 100.0))
+    x2 = w - int(round(w * rp / 100.0))
+    if x2 - x1 < 10:
+        return [part]
+
+    result: List[SplitPart] = []
+    if rp > 0.0 and w - x2 >= 5:
+        right_img = base_img.crop((x2, 0, w, h))
+        result.append(
+            SplitPart(
+                right_img,
+                "삽화 우측 본문 분리",
+                False,
+                "삽화에서 분리된 본문 (이전 페이지)",
+                header_cut_applied=part.header_cut_applied,
+                side_crop_origin_key=origin_key,
+            )
+        )
+
+    mid_img = base_img.crop((x1, 0, x2, h))
+    result.append(
+        SplitPart(
+            mid_img,
+            part.split_note,
+            True,
+            part.analysis_reason,
+            header_cut_applied=part.header_cut_applied,
+            detected_header_cut_y=part.detected_header_cut_y,
+            is_mini_illust=part.is_mini_illust,
+            side_crop_origin_key=origin_key,
+        )
+    )
+
+    if lp > 0.0 and x1 >= 5:
+        left_img = base_img.crop((0, 0, x1, h))
+        result.append(
+            SplitPart(
+                left_img,
+                "삽화 좌측 본문 분리",
+                False,
+                "삽화에서 분리된 본문 (다음 페이지)",
+                header_cut_applied=part.header_cut_applied,
+                side_crop_origin_key=origin_key,
+            )
+        )
+
+    return result

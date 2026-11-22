@@ -110,6 +110,7 @@ class RunMixin():
             cover_crop_rect=self._cover_crop_rect,
             classification_overrides=dict(self._classification_overrides),
             illust_trim_overrides=dict(self._illust_trim_overrides),
+            illust_side_crops=dict(self._illust_side_crops),
             illust_no_merge=dict(self._illust_no_merge),
         )
 
