@@ -2,26 +2,30 @@ import json
 import re
 from typing import List, Tuple
 
-from core.ocr_engine import TextSpan
+from core.ocr import TextSpan
 
 _BOLD_TAG_RE = re.compile(r"(<b>.*?</b>)", re.IGNORECASE | re.DOTALL)
 _MD_BOLD_RE = re.compile(r"(\*\*.*?\*\*)")
 _BOLD_TAG_TOKEN_RE = re.compile(r"(</?b>)", re.IGNORECASE)
-_FT_BLOCK_RE = re.compile(r"<ft\b[^>]*>(.*?)</ft>", re.IGNORECASE | re.DOTALL)
-_STRAY_FT_RE = re.compile(r"</?(?:ft|font|span)\b[^>]*>", re.IGNORECASE)
+_TAG_BLOCK_RE = re.compile(r"<(title|bic|ft)\b[^>]*>(.*?)</\1>", re.IGNORECASE | re.DOTALL)
+_STRAY_STRUCT_RE = re.compile(r"</?(?:title|bic|ft|font|span)\b[^>]*>", re.IGNORECASE)
 _RUBY_BLOCK_RE = re.compile(r"<ruby\b[^>]*>(.*?)</ruby>", re.IGNORECASE | re.DOTALL)
 _RT_RP_RE = re.compile(r"<(?:rt|rp)\b[^>]*>.*?</(?:rt|rp)>", re.IGNORECASE | re.DOTALL)
 _STRAY_RUBY_TAG_RE = re.compile(r"</?(?:ruby|rt|rp|font|span)\b[^>]*>", re.IGNORECASE)
 
 
-def strip_ft_tags(text: str) -> str:
+def strip_structure_tags(text: str) -> str:
     if not text or "<" not in text:
         return text
-    return _STRAY_FT_RE.sub("", text)
+    return _STRAY_STRUCT_RE.sub("", text)
+
+
+def strip_ft_tags(text: str) -> str:
+    return strip_structure_tags(text)
 
 
 def parse_inline_bold_spans(text: str, whole_bold: bool = False) -> List[TextSpan]:
-    text = strip_ft_tags(text)
+    text = strip_structure_tags(text)
     if "<b>" in text.lower():
         parts = _BOLD_TAG_RE.split(text)
         spans: List[TextSpan] = []
@@ -129,38 +133,41 @@ def split_merged_paragraph_lines(raw_text: str) -> List[str]:
     return result
 
 
-def extract_ft_segments(raw_text: str) -> List[Tuple[str, bool]]:
+def extract_tagged_segments(raw_text: str) -> List[Tuple[str, str]]:
     if not raw_text:
         return []
-    if "<ft" not in raw_text.lower():
-        return [(line, False) for line in split_merged_paragraph_lines(raw_text)]
-    segments: List[Tuple[str, bool]] = []
+    low = raw_text.lower()
+    if "<title" not in low and "<bic" not in low and "<ft" not in low:
+        return [(line, "") for line in split_merged_paragraph_lines(raw_text)]
+    segments: List[Tuple[str, str]] = []
     pos = 0
     in_bold = False
-    for match in _FT_BLOCK_RE.finditer(raw_text):
+    for match in _TAG_BLOCK_RE.finditer(raw_text):
         before = raw_text[pos:match.start()]
         if before:
-            clean_before = strip_ft_tags(before)
+            clean_before = strip_structure_tags(before)
             for tag_m in _BOLD_TAG_TOKEN_RE.finditer(clean_before):
                 in_bold = not tag_m.group(1).lower().startswith("</")
             for line in split_merged_paragraph_lines(clean_before):
-                segments.append((line, False))
-        inner = strip_ft_tags(match.group(1)).strip()
+                segments.append((line, ""))
+        raw_tag = match.group(1).lower()
+        seg_tag = "bic" if raw_tag == "bic" else "title"
+        inner = strip_structure_tags(match.group(2)).strip()
         if inner:
             if in_bold and "<b" not in inner.lower():
                 inner = f"<b>{inner}</b>"
-            for tag_m in _BOLD_TAG_TOKEN_RE.finditer(match.group(1)):
+            for tag_m in _BOLD_TAG_TOKEN_RE.finditer(match.group(2)):
                 in_bold = not tag_m.group(1).lower().startswith("</")
             for sub in inner.splitlines():
                 s = sub.strip()
                 if s and s not in ("<b></b>", "<b>", "</b>"):
-                    segments.append((s, True))
+                    segments.append((s, seg_tag))
         pos = match.end()
     tail = raw_text[pos:]
     if tail:
-        clean_tail = strip_ft_tags(tail)
+        clean_tail = strip_structure_tags(tail)
         for line in split_merged_paragraph_lines(clean_tail):
-            segments.append((line, False))
+            segments.append((line, ""))
     return segments
 
 

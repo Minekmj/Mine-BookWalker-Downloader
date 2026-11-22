@@ -9,7 +9,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from core.paths import ensure_app_dirs
+from core.config.paths import ensure_app_dirs
 from ui.main_window import MainWindow
 
 def ensure_qss_icons(icon_dir: Path):

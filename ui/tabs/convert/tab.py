@@ -4,7 +4,7 @@ from typing import Dict, List
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QScrollArea, QSplitter, QVBoxLayout, QWidget
 
-from core.settings import DEFAULT_SETTINGS
+from core.config.settings import DEFAULT_SETTINGS
 from ui.tabs.convert.layout import LayoutMixin
 from ui.tabs.convert.preview import PreviewMixin
 from ui.tabs.convert.run import RunMixin
@@ -30,9 +30,11 @@ class ConvertTab(LayoutMixin, PreviewMixin, SettingsMixin, RunMixin, QWidget):
         main_layout = QHBoxLayout(self)
         main_layout.setSpacing(10)
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
         main_layout.addWidget(splitter)
 
         left_panel = QWidget()
+        left_panel.setMinimumWidth(0)
         left = QVBoxLayout(left_panel)
         left.setSpacing(10)
         left.setContentsMargins(0, 0, 6, 0)
@@ -47,6 +49,7 @@ class ConvertTab(LayoutMixin, PreviewMixin, SettingsMixin, RunMixin, QWidget):
         left.addWidget(self._build_run_group())
 
         right_panel = self._build_preview_group()
+        right_panel.setMinimumWidth(0)
 
         splitter.addWidget(left_panel)
         splitter.addWidget(right_panel)

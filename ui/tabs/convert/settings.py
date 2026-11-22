@@ -3,10 +3,10 @@ from typing import Dict
 
 from PySide6.QtWidgets import QFileDialog, QLabel
 
-from core.image_utils import image_fingerprint, list_images_in_folder
-from core.mode_detector import detect_folder_mode
-from core.novel_detector import SplitPart
-from core.paths import OUT_IMG
+from core.vision.image_utils import image_fingerprint, list_images_in_folder
+from core.vision.mode_detector import detect_folder_mode
+from core.vision.novel_detector import SplitPart
+from core.config.paths import OUT_IMG
 from ui.dialogs.settings_dialog import AdvancedSettingsDialog
 
 

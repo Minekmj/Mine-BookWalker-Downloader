@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -42,11 +43,13 @@ class LayoutMixin():
         g.setSpacing(8)
 
         self.input_edit = QLineEdit()
+        self.input_edit.setMinimumWidth(80)
         self.input_edit.setPlaceholderText("이미지 폴더 선택")
         btn_in = QPushButton("폴더 선택")
         btn_in.clicked.connect(self._browse_input)
 
         self.book_title_edit = QLineEdit()
+        self.book_title_edit.setMinimumWidth(80)
         self.book_title_edit.setPlaceholderText("책 제목 (비우면 폴더명)")
 
         g.addWidget(QLabel("원본 폴더"), 0, 0)
@@ -54,7 +57,7 @@ class LayoutMixin():
         g.addWidget(btn_in, 0, 2)
 
         g.addWidget(QLabel("제목"), 1, 0)
-        g.addWidget(self.book_title_edit, 1, 1, 1, 3)
+        g.addWidget(self.book_title_edit, 1, 1, 1, 2)
         return box
 
     def _build_options_group(self) -> QWidget:
@@ -74,6 +77,7 @@ class LayoutMixin():
         self.format_combo.addItem("만화 · ZIP", "manga_zip")
         self.format_combo.currentIndexChanged.connect(self._on_mode_changed)
         format_layout.addWidget(self.format_combo)
+        format_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         outer.addWidget(format_box)
 
         split_box = QGroupBox("페이지 분할")
@@ -92,6 +96,7 @@ class LayoutMixin():
         split_layout.addWidget(self.chk_split)
         split_layout.addWidget(self.chk_split_skip_first)
         split_layout.addWidget(self.chk_split_large)
+        split_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         outer.addWidget(split_box)
 
         self.novel_box = QGroupBox("라노벨 전용 설정")
@@ -143,6 +148,7 @@ class LayoutMixin():
         btn_advanced.clicked.connect(self._open_advanced_settings)
         novel_layout.addWidget(btn_advanced)
 
+        self.novel_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         outer.addWidget(self.novel_box)
 
         self.manga_box = QGroupBox("만화 전용 설정")
@@ -165,7 +171,9 @@ class LayoutMixin():
         manga_hint = QLabel("표지 자르기는 첫 번째 이미지에만 적용됩니다.")
         manga_hint.setObjectName("hintLabel")
         manga_layout.addWidget(manga_hint)
+        self.manga_box.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         outer.addWidget(self.manga_box)
+        outer.addStretch(1)
         return root
 
     def _build_run_group(self) -> QWidget:

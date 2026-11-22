@@ -1,11 +1,9 @@
 from pathlib import Path
-import shutil
-
 from PySide6.QtWidgets import QMainWindow, QTabWidget
 from shiboken6 import isValid
 
-from core.paths import DIR_TMP, ensure_app_dirs
-from core.settings import load_app_settings, save_app_settings
+from core.config.paths import cleanup_session_tmp, cleanup_stale_tmp, ensure_app_dirs
+from core.config.settings import load_app_settings, save_app_settings
 from ui.tabs.convert import ConvertTab
 from ui.tabs.web_script import WebScriptTab
 
@@ -18,6 +16,7 @@ class MainWindow(QMainWindow):
         self.resize(1140, 780)
 
         ensure_app_dirs()
+        cleanup_stale_tmp()
         self.app_settings = load_app_settings(self.settings_path)
 
         self.tabs = QTabWidget()
@@ -47,6 +46,6 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
             self.tab_convert._analysis_worker = None
-        shutil.rmtree(DIR_TMP / "preview", ignore_errors=True)
+        cleanup_session_tmp()
         self._save_settings()
         super().closeEvent(event)

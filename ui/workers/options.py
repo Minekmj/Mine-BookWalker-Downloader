@@ -49,6 +49,10 @@ class ProcessOptions:
     gemini_review_duplicates: bool = True
     gemini_review_illustrations: bool = True
     gemini_review_passes: int = 2
+    gemini_review_batch_size: int = 15
+    gemini_illust_toc_batch_size: int = 5
+    gemini_missing_toc_batch_size: int = 8
+    extra_prompts: Optional[Dict[str, str]] = None
     ocr_language: str = "ja"
     ocr_orientation: str = "vertical"
     illust_sensitivity: str = "normal"

@@ -1,5 +1,5 @@
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QPixmap, QTransform
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -12,16 +12,19 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSplitter,
+    QStackedWidget,
     QVBoxLayout,
 )
 
 from ui.panels.gemini_panel import GEMINI_MODEL_PRESETS
+from ui.widgets.vertical_text_view import VerticalTextView
 
 
 class FailureReviewDialog(QDialog):
     def __init__(self, payload: dict, current_settings: dict, parent=None):
         super().__init__(parent)
         self.payload = payload
+        self._raw_image = payload.get("image")
         self._decision = {"action": "keep"}
 
         page_no = payload["page_no"]
@@ -48,17 +51,35 @@ class FailureReviewDialog(QDialog):
 
         img_box = QGroupBox("페이지 이미지")
         img_layout = QVBoxLayout(img_box)
+        img_ctrl = QHBoxLayout()
+        self.chk_rotate_ccw = QCheckBox("이미지 -90° 회전")
+        self.chk_rotate_ccw.toggled.connect(self._render_image)
+        img_ctrl.addWidget(self.chk_rotate_ccw)
+        img_ctrl.addStretch()
+        img_layout.addLayout(img_ctrl)
+
         self.lbl_img = QLabel()
         self.lbl_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_img.setMinimumSize(340, 400)
-        self._set_pil_image(payload["image"])
-        img_layout.addWidget(self.lbl_img)
+        img_layout.addWidget(self.lbl_img, 1)
+        self._render_image()
 
         txt_box = QGroupBox("추출 결과 (직접 수정 가능)")
         txt_layout = QVBoxLayout(txt_box)
+        txt_ctrl = QHBoxLayout()
+        self.chk_vertical_text = QCheckBox("글자 세로쓰기 (일본어)")
+        self.chk_vertical_text.toggled.connect(self._toggle_vertical_text)
+        txt_ctrl.addWidget(self.chk_vertical_text)
+        txt_ctrl.addStretch()
+        txt_layout.addLayout(txt_ctrl)
+
+        self.txt_stack = QStackedWidget()
         self.edit_text = QPlainTextEdit()
         self.edit_text.setPlainText(payload.get("current_text", ""))
-        txt_layout.addWidget(self.edit_text)
+        self.vert_text = VerticalTextView()
+        self.txt_stack.addWidget(self.edit_text)
+        self.txt_stack.addWidget(self.vert_text)
+        txt_layout.addWidget(self.txt_stack, 1)
 
         splitter.addWidget(img_box)
         splitter.addWidget(txt_box)
@@ -114,15 +135,26 @@ class FailureReviewDialog(QDialog):
 
         root.addWidget(retry_group)
 
-    def _set_pil_image(self, img):
-        if img is None:
+    def _toggle_vertical_text(self, checked: bool):
+        if checked:
+            self.vert_text.set_text(self.edit_text.toPlainText())
+            self.txt_stack.setCurrentWidget(self.vert_text)
+        else:
+            self.txt_stack.setCurrentWidget(self.edit_text)
+
+    def _render_image(self):
+        if self._raw_image is None:
             return
-        rgb = img.convert("RGB")
+        rgb = self._raw_image.convert("RGB")
         data = rgb.tobytes("raw", "RGB")
         qimg = QImage(data, rgb.width, rgb.height, rgb.width * 3, QImage.Format.Format_RGB888)
         pix = QPixmap.fromImage(qimg.copy())
+        if self.chk_rotate_ccw.isChecked():
+            pix = pix.transformed(QTransform().rotate(-90), Qt.TransformationMode.SmoothTransformation)
+        target_w = max(360, self.lbl_img.width() or 420)
+        target_h = max(400, self.lbl_img.height() or 500)
         self.lbl_img.setPixmap(
-            pix.scaled(400, 500, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            pix.scaled(target_w, target_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         )
 
     def _choose(self, action: str):

@@ -4,9 +4,9 @@ from typing import List, Optional
 
 from PySide6.QtCore import QThread, Signal
 
-from core.image_utils import image_fingerprint, is_blank_image, load_image_rgb, save_tmp_image
-from core.novel_detector import SplitPart
-from core.page_pipeline import compute_base_parts
+from core.vision.image_utils import image_fingerprint, is_blank_image, load_image_rgb, save_tmp_image
+from core.vision.novel_detector import SplitPart
+from core.vision.page_pipeline import compute_base_parts
 
 
 class PageAnalysisWorker(QThread):

@@ -1,8 +1,8 @@
 from ui.workers.options import EpubOnlyOptions
 from PySide6.QtCore import QThread, Signal
-from core.epub.styles import EpubDesignConfig
-from core.exporters import export_light_novel, load_ocr_backup
-from core.paths import DIR_OUT
+from core.export.epub.styles import EpubDesignConfig
+from core.export.exporters import export_light_novel, load_ocr_backup
+from core.config.paths import DIR_OUT
 
 
 class EpubOnlyWorker(QThread):

@@ -3,7 +3,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QMessageBox
 
 from core.gemini import parse_api_keys
-from core.paths import DIR_EPUB, DIR_OUT
+from core.config.paths import DIR_EPUB, DIR_OUT
 from ui.dialogs.correction_preview_dialog import CorrectionPreviewDialog
 from ui.dialogs.fail_dialog import FailureReviewDialog
 from ui.workers import ProcessOptions, ProcessWorker
@@ -94,6 +94,10 @@ class RunMixin():
             gemini_review_duplicates=bool(self.adv.get("gemini_review_duplicates", True)),
             gemini_review_illustrations=bool(self.adv.get("gemini_review_illustrations", True)),
             gemini_review_passes=max(1, min(3, int(self.adv.get("gemini_review_passes", 2)))),
+            gemini_review_batch_size=max(1, min(30, int(self.adv.get("gemini_review_batch_size", 15)))),
+            gemini_illust_toc_batch_size=max(1, min(20, int(self.adv.get("gemini_illust_toc_batch_size", 5)))),
+            gemini_missing_toc_batch_size=max(1, min(20, int(self.adv.get("gemini_missing_toc_batch_size", 8)))),
+            extra_prompts={k: str(self.adv.get(k, "") or "").strip() for k in ("prompt_extra_ocr", "prompt_extra_content_review", "prompt_extra_toc_reconcile", "prompt_extra_illust_toc", "prompt_extra_missing_toc", "prompt_extra_structure_audit")},
             illust_sensitivity=str(self.adv.get("illust_sensitivity", "normal")),
             scene_break_style=str(self.adv.get("scene_break_style", "stars")),
             resume_from_backup=bool(self.adv.get("resume_from_backup", True)),

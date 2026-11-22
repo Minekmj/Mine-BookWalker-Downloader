@@ -19,6 +19,7 @@ from ui.panels.epub_design_panel import EpubDesignPanel
 from ui.panels.api_key_panel import ApiKeyPanel
 from ui.panels.gemini_panel import GeminiPanel
 from ui.panels.final_review_panel import FinalReviewPanel
+from ui.panels.extra_prompts_panel import ExtraPromptsPanel
 
 class AdvancedSettingsDialog(QDialog):
     def __init__(self, current_settings: Dict, parent=None, initial_tab: int = 0):
@@ -40,6 +41,8 @@ class AdvancedSettingsDialog(QDialog):
         self.tabs.addTab(self._build_epub_tab(current_settings), "EPUB 디자인")
         self.review_panel = FinalReviewPanel(current_settings)
         self.tabs.addTab(self.review_panel, "최종 검수")
+        self.extra_prompts_panel = ExtraPromptsPanel(current_settings)
+        self.tabs.addTab(self.extra_prompts_panel, "추가 요청사항")
         self.tabs.setCurrentIndex(max(0, min(initial_tab, self.tabs.count() - 1)))
         root.addWidget(self.tabs, 1)
         perf_row = QHBoxLayout()
@@ -149,4 +152,5 @@ class AdvancedSettingsDialog(QDialog):
         values.update(self.gemini_panel.get_config())
         values.update(self.epub_design_panel.get_config())
         values.update(self.review_panel.get_config())
+        values.update(self.extra_prompts_panel.get_config())
         return values

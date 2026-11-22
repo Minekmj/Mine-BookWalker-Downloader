@@ -3,6 +3,7 @@ from typing import Dict
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QSpinBox,
@@ -41,35 +42,64 @@ class FinalReviewPanel(QWidget):
             self.check_widgets[key] = box
             root.addWidget(box)
 
-        pass_row = QHBoxLayout()
-        pass_row.addWidget(QLabel("수정·재검수 반복"))
+        batch_grid = QGridLayout()
+        batch_grid.setSpacing(10)
+
         self.spin_review_passes = QSpinBox()
         self.spin_review_passes.setRange(1, 3)
         self.spin_review_passes.setSuffix("회")
         self.spin_review_passes.setMinimumHeight(30)
-        pass_row.addWidget(self.spin_review_passes)
-        pass_row.addStretch()
-        root.addLayout(pass_row)
+
+        self.spin_review_batch = QSpinBox()
+        self.spin_review_batch.setRange(1, 30)
+        self.spin_review_batch.setSuffix("장")
+        self.spin_review_batch.setMinimumHeight(30)
+
+        self.spin_illust_toc_batch = QSpinBox()
+        self.spin_illust_toc_batch.setRange(1, 20)
+        self.spin_illust_toc_batch.setSuffix("장")
+        self.spin_illust_toc_batch.setMinimumHeight(30)
+
+        self.spin_missing_toc_batch = QSpinBox()
+        self.spin_missing_toc_batch.setRange(1, 20)
+        self.spin_missing_toc_batch.setSuffix("장")
+        self.spin_missing_toc_batch.setMinimumHeight(30)
+
+        batch_grid.addWidget(QLabel("수정·재검수 반복"), 0, 0)
+        batch_grid.addWidget(self.spin_review_passes, 0, 1)
+        batch_grid.addWidget(QLabel("내용 검수 배치"), 0, 2)
+        batch_grid.addWidget(self.spin_review_batch, 0, 3)
+        batch_grid.addWidget(QLabel("삽화 목차 배치"), 1, 0)
+        batch_grid.addWidget(self.spin_illust_toc_batch, 1, 1)
+        batch_grid.addWidget(QLabel("누락 목차 배치"), 1, 2)
+        batch_grid.addWidget(self.spin_missing_toc_batch, 1, 3)
+        batch_grid.setColumnStretch(4, 1)
+        root.addLayout(batch_grid)
         root.addStretch()
 
         self.chk_final_review.toggled.connect(self._sync_enabled)
         self.chk_final_review.toggled.connect(lambda *_: self.changed.emit())
         for box in self.check_widgets.values():
             box.toggled.connect(lambda *_: self.changed.emit())
-        self.spin_review_passes.valueChanged.connect(lambda *_: self.changed.emit())
+        for spin in (self.spin_review_passes, self.spin_review_batch, self.spin_illust_toc_batch, self.spin_missing_toc_batch):
+            spin.valueChanged.connect(lambda *_: self.changed.emit())
 
         self.set_config(initial_settings)
 
     def _sync_enabled(self, enabled: bool):
         for box in self.check_widgets.values():
             box.setEnabled(enabled)
-        self.spin_review_passes.setEnabled(enabled)
+        for spin in (self.spin_review_passes, self.spin_review_batch, self.spin_illust_toc_batch, self.spin_missing_toc_batch):
+            spin.setEnabled(enabled)
 
     def get_config(self) -> Dict:
         config = {"gemini_final_review": self.chk_final_review.isChecked()}
         for key, box in self.check_widgets.items():
             config[key] = box.isChecked()
         config["gemini_review_passes"] = self.spin_review_passes.value()
+        config["gemini_review_batch_size"] = self.spin_review_batch.value()
+        config["gemini_illust_toc_batch_size"] = self.spin_illust_toc_batch.value()
+        config["gemini_missing_toc_batch_size"] = self.spin_missing_toc_batch.value()
         return config
 
     def set_config(self, cfg: Dict):
@@ -81,7 +111,13 @@ class FinalReviewPanel(QWidget):
             default_val = False if key == "epub_register_dividers_in_toc" else True
             box.setChecked(bool(cfg.get(key, default_val)))
             box.blockSignals(False)
-        self.spin_review_passes.blockSignals(True)
-        self.spin_review_passes.setValue(int(cfg.get("gemini_review_passes", 2)))
-        self.spin_review_passes.blockSignals(False)
+        for spin, key, default in (
+            (self.spin_review_passes, "gemini_review_passes", 2),
+            (self.spin_review_batch, "gemini_review_batch_size", 15),
+            (self.spin_illust_toc_batch, "gemini_illust_toc_batch_size", 5),
+            (self.spin_missing_toc_batch, "gemini_missing_toc_batch_size", 8),
+        ):
+            spin.blockSignals(True)
+            spin.setValue(int(cfg.get(key, default)))
+            spin.blockSignals(False)
         self._sync_enabled(self.chk_final_review.isChecked())

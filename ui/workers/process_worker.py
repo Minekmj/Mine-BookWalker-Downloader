@@ -10,8 +10,8 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import QThread, Signal
 
-from core.exporters import export_manga_pdf, export_manga_zip
-from core.image_utils import (
+from core.export.exporters import export_manga_pdf, export_manga_zip
+from core.vision.image_utils import (
     crop_normalized_rect,
     image_fingerprint,
     is_blank_image,
@@ -19,9 +19,9 @@ from core.image_utils import (
     load_image_rgb,
     save_tmp_image,
 )
-from core.novel_detector import SplitPart
-from core.page_pipeline import compute_base_parts, render_illustration_image
-from core.paths import DIR_TMP
+from core.vision.novel_detector import SplitPart
+from core.vision.page_pipeline import compute_base_parts, render_illustration_image
+from core.config.paths import SESSION_TMP
 from ui.workers.entries import EntryMixin
 from ui.workers.novel import NovelMixin
 from ui.workers.options import ProcessOptions
@@ -92,7 +92,7 @@ class ProcessWorker(EntryMixin, NovelMixin, ReviewMixin, QThread):
         }
 
     def run(self):
-        run_tmp = DIR_TMP / f"run_{os.getpid()}_{int(time.time() * 1000)}"
+        run_tmp = SESSION_TMP / f"run_{int(time.time() * 1000)}"
         run_tmp.mkdir(parents=True, exist_ok=True)
         self._run_tmp_dir = run_tmp
         try:

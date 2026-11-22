@@ -3,10 +3,10 @@ from pathlib import Path
 from typing import List, Optional
 
 from core.gemini import parse_inline_bold_spans
-from core.gemini.markup import extract_ft_segments, strip_ft_tags
-from core.image_utils import image_fingerprint, save_tmp_image
-from core.novel_detector import SplitPart
-from core.ocr_engine import OCRParagraph, is_scene_break_text
+from core.gemini.markup import extract_tagged_segments, strip_structure_tags
+from core.vision.image_utils import image_fingerprint, save_tmp_image
+from core.vision.novel_detector import SplitPart
+from core.ocr import OCRParagraph, is_scene_break_text
 
 
 class EntryMixin():
@@ -54,16 +54,19 @@ class EntryMixin():
         lines = []
         for paragraph in paragraphs:
             line = "".join(f"<b>{span.text}</b>" if span.is_bold else span.text for span in paragraph.spans)
-            if paragraph.is_toc_candidate and not paragraph.is_scene_break and line.strip():
-                line = f"<ft>{line}</ft>"
+            if not paragraph.is_scene_break and line.strip():
+                if paragraph.is_toc_candidate:
+                    line = f"<title>{line}</title>"
+                elif paragraph.is_bic_candidate:
+                    line = f"<bic>{line}</bic>"
             lines.append(line)
         return "\n".join(lines)
 
     @staticmethod
     def _editable_text_to_paragraphs(raw_text: str) -> List[OCRParagraph]:
         paragraphs = []
-        for index, (text, is_ft) in enumerate(extract_ft_segments(raw_text)):
-            clean_text = strip_ft_tags(text)
+        for index, (text, seg_tag) in enumerate(extract_tagged_segments(raw_text)):
+            clean_text = strip_structure_tags(text)
             if not clean_text.strip():
                 continue
             is_scene = is_scene_break_text(clean_text)
@@ -72,7 +75,8 @@ class EntryMixin():
                     spans=parse_inline_bold_spans(clean_text, False),
                     is_scene_break=is_scene,
                     reading_order=index,
-                    is_toc_candidate=is_ft and not is_scene,
+                    is_toc_candidate=(seg_tag == "title") and not is_scene,
+                    is_bic_candidate=(seg_tag == "bic") and not is_scene,
                 )
             )
         return paragraphs

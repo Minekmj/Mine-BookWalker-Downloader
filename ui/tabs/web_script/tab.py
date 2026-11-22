@@ -7,7 +7,7 @@ import threading
 from PySide6.QtCore import Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication, QComboBox, QFormLayout, QGroupBox, QLabel, QMessageBox, QPlainTextEdit, QPushButton, QSpinBox, QVBoxLayout, QWidget
-from core.paths import OUT_IMG
+from core.config.paths import OUT_IMG
 from ui.tabs.web_script.template import render_web_script
 
 

@@ -2,14 +2,14 @@ from pathlib import Path
 import threading
 from typing import Dict, List
 
-from core.epub import deduplicate_entries
-from core.epub.styles import EpubDesignConfig
-from core.exporters import export_light_novel, load_ocr_backup, save_ocr_backup
+from core.export.epub import deduplicate_entries
+from core.export.epub.styles import EpubDesignConfig
+from core.export.exporters import export_light_novel, load_ocr_backup, save_ocr_backup
 from core.gemini import GeminiTranscriber, parse_api_keys
-from core.image_utils import load_image_rgb
-from core.novel_detector import SplitPart
-from core.page_pipeline import prepare_text_ocr_image
-from core.paths import DIR_BACK_OCR, DIR_EPUB, DIR_OUT
+from core.vision.image_utils import load_image_rgb
+from core.vision.novel_detector import SplitPart
+from core.vision.page_pipeline import prepare_text_ocr_image
+from core.config.paths import DIR_BACK_OCR, DIR_EPUB, DIR_OUT
 
 
 class NovelMixin():
@@ -125,7 +125,7 @@ class NovelMixin():
         api_keys = parse_api_keys(self.opts.gemini_api_keys)
         if not api_keys:
             raise RuntimeError("Gemini API 키가 입력되지 않았습니다.")
-        transcriber = GeminiTranscriber(api_keys=api_keys, model_name=self.opts.gemini_model, rpm_per_key=self.opts.gemini_rpm, temperature=self.opts.gemini_temperature, temp_step=self.opts.gemini_temp_step, max_retries=self.opts.gemini_max_retries, language=self.opts.ocr_language, orientation=self.opts.ocr_orientation)
+        transcriber = GeminiTranscriber(api_keys=api_keys, model_name=self.opts.gemini_model, rpm_per_key=self.opts.gemini_rpm, temperature=self.opts.gemini_temperature, temp_step=self.opts.gemini_temp_step, max_retries=self.opts.gemini_max_retries, language=self.opts.ocr_language, orientation=self.opts.ocr_orientation, extra_prompts=self.opts.extra_prompts)
         failed_pages = {}
         ocr_ink_ratios: Dict[int, float] = {}
         ocr_used_temps: Dict[int, float] = {}
