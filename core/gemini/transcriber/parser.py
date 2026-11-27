@@ -34,14 +34,16 @@ def parse_page_paragraphs(raw_paras: List[dict], ends_open: bool, p_no: int, lan
     next_order = 0
     for idx, (_, _, para, txt) in enumerate(ordered_raw):
         block_type = str(para.get("block_type", "paragraph") or "paragraph").lower()
+        clean_plain_txt = strip_structure_tags(txt)
+        is_sb = is_scene_break_text(clean_plain_txt)
+        if block_type in {"divider", "scene_break"} and not is_sb:
+            block_type = "paragraph"
         try:
             heading_level = max(0, min(3, int(para.get("heading_level", 0) or 0)))
         except (TypeError, ValueError):
             heading_level = 0
         is_heading = bool(para.get("is_heading", False)) or block_type in ("chapter_heading", "section_heading", "divider")
         is_toc_entry = bool(para.get("is_toc_entry", False)) or block_type == "toc_entry"
-        clean_plain_txt = strip_structure_tags(txt)
-        is_sb = bool(para.get("is_scene_break", False)) or block_type == "scene_break" or is_scene_break_text(clean_plain_txt)
         whole_bold = bool(para.get("is_bold", False))
         is_last = idx == len(ordered_raw) - 1
         low_txt = txt.lower()

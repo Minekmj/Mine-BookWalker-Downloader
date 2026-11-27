@@ -74,7 +74,9 @@ class PreviewCacheMixin:
             cropped = crop_normalized_rect(img, self._cover_crop_rect)
             parts = [SplitPart(cropped, "첫 장 표지 영역 자르기", True, "사용자 지정 표지 영역")]
         else:
-            parts = compute_base_parts(img, file_idx == 0, is_novel, self._analysis_params())
+            params = self._analysis_params()
+            params["auto_separate_disabled"] = bool(self._no_auto_separate.get(path.name, False))
+            parts = compute_base_parts(img, file_idx == 0, is_novel, params)
         cached_parts = []
         for part_idx, part in enumerate(parts):
             fp = part.fingerprint or image_fingerprint(part.image)

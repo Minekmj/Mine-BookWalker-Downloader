@@ -113,7 +113,9 @@ class ProcessWorker(EntryMixin, NovelMixin, ReviewMixin, QThread):
                     cropped = crop_normalized_rect(source, self.opts.cover_crop_rect)
                     parts = [SplitPart(cropped, "첫 장 표지 영역 자르기", True, "사용자 지정 표지 영역")]
                 else:
-                    parts = compute_base_parts(source, index == 0, self.opts.mode != "manga", pipeline_params)
+                    file_params = dict(pipeline_params)
+                    file_params["auto_separate_disabled"] = bool((self.opts.no_auto_separate or {}).get(path.name, False))
+                    parts = compute_base_parts(source, index == 0, self.opts.mode != "manga", file_params)
                 overrides = self.opts.classification_overrides or {}
                 resolved_items = []
                 for part_index, part in enumerate(parts):

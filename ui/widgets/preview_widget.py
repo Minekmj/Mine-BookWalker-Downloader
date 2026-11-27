@@ -133,7 +133,7 @@ class CutlinePreviewWidget(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#e5e7eb"))
+        painter.fillRect(self.rect(), QColor("#2e313d"))
 
         if not self._pixmap or self._pixmap.isNull():
             painter.setPen(QColor("#6b7280"))

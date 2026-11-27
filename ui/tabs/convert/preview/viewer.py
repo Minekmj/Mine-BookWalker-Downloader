@@ -19,6 +19,7 @@ class PreviewViewerMixin:
             self.lbl_total_pages.setText("/ 0")
             self.chk_preview_illust_trim.setVisible(False)
             self.btn_preview_unmerge.setVisible(False)
+            self.btn_preview_merge.setVisible(False)
             self._hide_side_crop_controls()
             self._set_status_label(self.lbl_preview_type, "statusMute", "폴더를 선택하세요")
             self.preview_widget.set_image(None)
@@ -47,6 +48,7 @@ class PreviewViewerMixin:
         if part_img is None or self._part_is_blank(part):
             self.chk_preview_illust_trim.setVisible(False)
             self.btn_preview_unmerge.setVisible(False)
+            self.btn_preview_merge.setVisible(False)
             self._hide_side_crop_controls()
             self.preview_widget.set_hover_only(False)
             self.preview_widget.set_cutline_enabled(False)
@@ -57,6 +59,7 @@ class PreviewViewerMixin:
             self.chk_preview_illustration.setVisible(False)
             self.chk_preview_illust_trim.setVisible(False)
             self.btn_preview_unmerge.setVisible(False)
+            self.btn_preview_merge.setVisible(False)
             self._hide_side_crop_controls()
             self.preview_widget.set_hover_only(False)
             self.preview_widget.set_cutline_enabled(False)
@@ -70,6 +73,7 @@ class PreviewViewerMixin:
             self.chk_preview_illust_trim.blockSignals(False)
             self.chk_preview_illust_trim.setVisible(True)
             self.btn_preview_unmerge.setVisible(part.split_note == "양면 삽화 병합")
+            self.btn_preview_merge.setVisible(part.split_note.startswith("본문·삽화 분할"))
 
             key = part.side_crop_origin_key or self._classification_key(self._cur_file_idx, self._cur_sub_idx, part)
             saved_crop = self._illust_side_crops.get(key)
@@ -114,6 +118,7 @@ class PreviewViewerMixin:
         else:
             self.chk_preview_illust_trim.setVisible(False)
             self.btn_preview_unmerge.setVisible(False)
+            self.btn_preview_merge.setVisible(part.split_note.startswith("본문·삽화 분할"))
             self._hide_side_crop_controls()
             self.preview_widget.set_hover_only(False)
             show_cut = self.chk_remove_header.isChecked() and str(self.combo_header_cut.currentData()) != "off" and not part.header_cut_applied

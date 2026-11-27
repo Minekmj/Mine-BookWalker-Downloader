@@ -40,7 +40,9 @@ class PageAnalysisWorker(QThread):
         image = load_image_rgb(self._files[index])
         if self._cancelled:
             return index, None
-        parts = compute_base_parts(image, index == 0, self._is_novel, self._params)
+        params = dict(self._params)
+        params["auto_separate_disabled"] = bool((params.get("no_auto_separate") or {}).get(Path(self._files[index]).name, False))
+        parts = compute_base_parts(image, index == 0, self._is_novel, params)
         if self._cache_dir is None:
             return index, parts
         cached_parts = []

@@ -69,6 +69,7 @@ class ProcessOptions:
     illust_trim_overrides: Optional[Dict[str, bool]] = None
     illust_side_crops: Optional[Dict[str, list]] = None
     illust_no_merge: Optional[Dict[str, bool]] = None
+    no_auto_separate: Optional[Dict[str, bool]] = None
 
 
 @dataclass

@@ -66,11 +66,13 @@ class SettingsMixin():
         self.manga_box.setVisible(not is_novel)
         self.btn_cover_crop.setEnabled(not is_novel and self.chk_cover_crop.isChecked())
         self.btn_cover_auto.setEnabled(not is_novel)
+        self.btn_epub_only.setVisible(is_novel)
         self.btn_find_text.setEnabled(is_novel)
         self.btn_next_illustration.setEnabled(is_novel)
         self.chk_preview_illustration.setVisible(is_novel)
         self.chk_preview_illust_trim.setVisible(False)
         self.btn_preview_unmerge.setVisible(False)
+        self.btn_preview_merge.setVisible(False)
         self.chk_preview_side_crop.setVisible(False)
         self.btn_side_crop_apply.setVisible(False)
         self.btn_side_crop_cancel.setVisible(False)
@@ -143,6 +145,7 @@ class SettingsMixin():
             "illust_trim_overrides": dict(self._illust_trim_overrides),
             "illust_side_crops": dict(self._illust_side_crops),
             "illust_no_merge": dict(self._illust_no_merge),
+            "no_auto_separate": dict(self._no_auto_separate),
         }
 
     def apply_settings(self, s: Dict):
@@ -178,4 +181,5 @@ class SettingsMixin():
         self._illust_trim_overrides = dict(s.get("illust_trim_overrides", {}) or {})
         self._illust_side_crops = dict(s.get("illust_side_crops", {}) or {})
         self._illust_no_merge = dict(s.get("illust_no_merge", {}) or {})
+        self._no_auto_separate = dict(s.get("no_auto_separate", {}) or {})
         self._refresh_preview()

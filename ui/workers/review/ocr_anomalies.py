@@ -39,6 +39,7 @@ class OcrAnomaliesMixin:
         self.progress_stage.emit(f"3/5 이상치 검토 (0/{total_anom})")
         self.progress.emit(0, total_anom)
         policy = self.opts.gemini_on_fail_action
+        bulk_decision = None
         for idx, record in enumerate(anomalies, start=1):
             if self._cancelled:
                 return
@@ -61,8 +62,9 @@ class OcrAnomaliesMixin:
             while True:
                 if self._cancelled:
                     return
-                decision = {"action": policy}
-                if policy == "ask":
+                is_bulk_replay = bulk_decision is not None
+                decision = dict(bulk_decision) if is_bulk_replay else {"action": policy}
+                if policy == "ask" and not is_bulk_replay:
                     decision = self._ask_user_review({
                         "page_no": page_no,
                         "source_name": source_name,
@@ -76,6 +78,8 @@ class OcrAnomaliesMixin:
                         "current_temp": cur_page_temp,
                         "retry_candidate_text": retry_text,
                     })
+                    if decision.get("apply_all"):
+                        bulk_decision = {"action": decision.get("action", "keep_edited"), "model": decision.get("model"), "temperature": decision.get("temperature")}
                 action = decision.get("action", "keep_edited")
                 if action == "cancel":
                     self._cancelled = True
@@ -100,7 +104,7 @@ class OcrAnomaliesMixin:
                         record = next((r for r in z_records if r["page_no"] == page_no), record)
                         if record.get("z_anomaly"):
                             self.log.emit(f"[OCR 재시도 후에도 통계 이상] p{page_no}: {record['char_count']}자 (Z={record['z_score']})")
-                            if policy != "ask":
+                            if policy != "ask" or bulk_decision is not None:
                                 break
                             error = f"재시도 후에도 문자 수 통계 이상 (Z={record['z_score']})"
                             current_text = self._paragraphs_to_editable_text(result.paragraphs)
@@ -111,7 +115,7 @@ class OcrAnomaliesMixin:
                         break
                     retry_err = retry_failures.get(page_no, "결과 없음")
                     self.log.emit(f"[OCR 재시도 실패] p{page_no}: {retry_err}")
-                    if policy != "ask":
+                    if policy != "ask" or bulk_decision is not None:
                         break
                     error = f"재시도 실패 ({retry_err})"
                     cur_model = retry_model
@@ -128,7 +132,7 @@ class OcrAnomaliesMixin:
                 elif action == "skip":
                     entries_map.pop(page_no, None)
                     break
-                elif decision.get("edited_text") is not None:
+                elif decision.get("edited_text") is not None and not is_bulk_replay:
                     paragraphs = self._editable_text_to_paragraphs(decision["edited_text"])
                     entries_map[page_no] = self._make_text_entry(page_no, source_name, part_index, part, source_key, paragraphs, fingerprint=fp)
                     break

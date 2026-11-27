@@ -11,6 +11,7 @@ from core.export.epub import EpubChapter, _clean_ruby, build_epub, deduplicate_e
 from core.export.epub.styles import EpubDesignConfig
 from core.vision.image_utils import load_entry_image, load_image_rgb
 from core.ocr import OCRParagraph
+from core.ocr.continuity import merge_page_continuations
 
 
 def export_manga_zip(pages: Sequence[Union[Image.Image, Path, str]], zip_path: Path, progress_cb: Optional[Callable[[int, int], None]] = None):
@@ -77,6 +78,7 @@ def save_ocr_backup(backup_dir: Path, entries: List[Dict]):
             "source_part_index": int(entry.get("source_part_index", 0)),
             "page_fingerprint": str(entry.get("page_fingerprint", "")),
             "ocr_version": 4,
+            "source_config": dict(entry.get("source_config") or {}),
         }
         if entry.get("type") == "illustration":
             filename = f"page_{page_no:04d}.png"
@@ -124,6 +126,7 @@ def load_ocr_backup(backup_json_path: Path) -> List[Dict]:
             "source_part_index": int(item.get("source_part_index", 0)),
             "page_fingerprint": str(item.get("page_fingerprint", "")),
             "ocr_version": int(item.get("ocr_version", 1) or 1),
+            "source_config": dict(item.get("source_config") or {}),
         }
         if item.get("type") == "illustration":
             image_path = (backup_dir / str(item.get("image_rel", ""))).resolve()
@@ -141,7 +144,7 @@ def load_ocr_backup(backup_json_path: Path) -> List[Dict]:
 
 
 def export_light_novel(output_dir: Path, book_name: str, entries: List[Dict], epub_target_path: Path, save_txt_folder: bool = True, make_epub: bool = True, design: Optional[EpubDesignConfig] = None) -> tuple[Optional[Path], List[EpubChapter]]:
-    entries = deduplicate_entries(entries)
+    entries = deduplicate_entries(merge_page_continuations(entries))
     cfg = design or EpubDesignConfig()
     chapters = organize_entries_to_chapters(entries, cfg.scene_break_style)
     epub_out = None

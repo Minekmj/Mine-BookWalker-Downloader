@@ -27,6 +27,7 @@ class ConvertTab(LayoutMixin, PreviewMixin, SettingsMixin, RunMixin, QWidget):
         self._side_crop_editing = False
         self._side_crop_pending = (0.0, 0.0)
         self._illust_no_merge = dict(self.adv.get("illust_no_merge", {}) or {})
+        self._no_auto_separate = dict(self.adv.get("no_auto_separate", {}) or {})
         saved_crop = self.adv.get("cover_crop_rect")
         self._cover_crop_rect = tuple(saved_crop) if saved_crop and len(saved_crop) == 4 else None
 
@@ -59,5 +60,7 @@ class ConvertTab(LayoutMixin, PreviewMixin, SettingsMixin, RunMixin, QWidget):
         splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 5)
 
+        self.settingsChanged.connect(self._update_backup_status)
         self.apply_settings(self.adv)
         self._on_mode_changed()
+        self._update_backup_status()

@@ -37,6 +37,8 @@ class PreviewActionsMixin:
             "split_skip_first": self.chk_split_skip_first.isChecked(),
             "split_only_wide": bool(self.adv.get("split_only_wide", True)),
             "split_large_images": self.chk_split_large.isChecked(),
+            "auto_separate_disabled": False,
+            "no_auto_separate": dict(self._no_auto_separate),
             "read_direction": "RTL",
             "illust_sensitivity": str(self.adv.get("illust_sensitivity", "normal")),
             "remove_text_header": self.chk_remove_header.isChecked(),
@@ -49,7 +51,7 @@ class PreviewActionsMixin:
         }
 
     def _params_key(self) -> str:
-        return json.dumps({"novel": self._is_novel(), **self._analysis_params()}, sort_keys=True)
+        return json.dumps({"novel": self._is_novel(), "no_auto_separate": self._no_auto_separate, **self._analysis_params()}, sort_keys=True)
 
     def _on_preview_illustration_toggled(self, checked: bool):
         if not self._preview_files or not self._is_novel():
@@ -84,6 +86,18 @@ class PreviewActionsMixin:
         self._illust_no_merge[fname] = True
         self.adv["illust_no_merge"] = dict(self._illust_no_merge)
         self.settingsChanged.emit()
+        self._refresh_preview()
+
+
+    def _on_preview_merge_clicked(self):
+        if not self._preview_files or not self._is_novel():
+            return
+        fname = self._preview_files[self._cur_file_idx].name
+        self._no_auto_separate[fname] = True
+        self.adv["no_auto_separate"] = dict(self._no_auto_separate)
+        self.settingsChanged.emit()
+        self._cur_sub_idx = 0
+        self._restart_analysis()
         self._refresh_preview()
 
     def _on_preview_illust_trim_toggled(self, checked: bool):

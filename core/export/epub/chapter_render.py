@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Tuple
 from core.export.epub.chapters import EpubChapter
 from core.export.epub.text_utils import _image_bytes, _render_spans_html, _xml_safe
 from core.export.epub.toc import find_toc_target
+from core.ocr import is_scene_break_text
 from core.vision.image_utils import load_entry_image
 
 
@@ -50,6 +51,9 @@ class ImageRegistry:
             self.order.append((rel, data, ""))
         return rel
 
+def check_text_break(text: str) -> bool:
+    return is_scene_break_text(str(text or ""))
+
 
 def _render_items(chapter: EpubChapter, chapter_index: int, title_targets: Dict[str, str], registry: ImageRegistry, register_dividers: bool = False):
     body = []
@@ -81,7 +85,7 @@ def _render_items(chapter: EpubChapter, chapter_index: int, title_targets: Dict[
             if section_text:
                 body.append(f'<{tag} id="{section_id}" class="section-title level-{level}">{_xml_safe(section_text)}</{tag}>')
                 subsections.append((level, section_id, section_text))
-        elif item_type == "scene_break":
+        elif item_type == "scene_break" and check_text_break(item.get("text", "＊　＊　＊")):
             value = item.get("text", "＊　＊　＊")
             body.append('<hr class="scene-hr"/>' if value == "__hr__" else f'<div class="scene-break">{_xml_safe(value)}</div>')
         elif item_type == "illustration":

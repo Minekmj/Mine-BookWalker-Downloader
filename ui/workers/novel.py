@@ -10,6 +10,7 @@ from core.vision.image_utils import load_image_rgb
 from core.vision.novel_detector import SplitPart
 from core.vision.page_pipeline import prepare_text_ocr_image
 from core.config.paths import DIR_BACK_OCR, DIR_EPUB, DIR_OUT
+from core.ocr.continuity import merge_page_continuations
 
 
 class NovelMixin():
@@ -54,6 +55,8 @@ class NovelMixin():
                 reused = 0
                 for page_no, entry in old_by_page.items():
                     if page_no <= total and entry.get("ocr_version", 0) >= 4 and entry.get("source_key") == source_keys.get(page_no):
+                        if not entry.get("source_config"):
+                            entry["source_config"] = self._source_config()
                         entries_map[page_no] = entry
                         reused += 1
                 self.log.emit(f"백업 확인: {reused}/{total}페이지 재사용")
@@ -220,7 +223,7 @@ class NovelMixin():
 
         self.progress_stage.emit("4/5 EPUB·파일 생성 중")
         self.progress.emit(0, 2)
-        entries = deduplicate_entries([entries_map[index] for index in sorted(entries_map)])
+        entries = merge_page_continuations(deduplicate_entries([entries_map[index] for index in sorted(entries_map)]))
         save_ocr_backup(backup_dir, entries)
         self.progress.emit(1, 2)
         self.log.emit(f"백업 저장 완료: {backup_json}")

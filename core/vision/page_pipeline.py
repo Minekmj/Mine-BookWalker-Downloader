@@ -30,6 +30,8 @@ def compute_base_parts(img: Image.Image, is_first_file: bool, is_novel: bool, pa
     )
     if not params["split_enabled"] or (params["split_skip_first"] and is_first_file):
         return parts
+    if params.get("auto_separate_disabled", False):
+        return parts
     return auto_separate_parts(
         parts,
         mode,

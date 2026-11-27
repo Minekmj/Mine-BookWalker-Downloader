@@ -51,18 +51,11 @@ def ensure_qss_icons(icon_dir: Path):
         pm.save(str(out_path))
 
 
-def apply_light_palette(app: QApplication):
+def apply_palette(app: QApplication):
     pal = QPalette()
-    pal.setColor(QPalette.ColorRole.Window, QColor("#f6f7f9"))
-    pal.setColor(QPalette.ColorRole.WindowText, QColor("#1f2328"))
-    pal.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
-    pal.setColor(QPalette.ColorRole.AlternateBase, QColor("#f8f9fa"))
-    pal.setColor(QPalette.ColorRole.Text, QColor("#1f2328"))
-    pal.setColor(QPalette.ColorRole.Button, QColor("#ffffff"))
-    pal.setColor(QPalette.ColorRole.ButtonText, QColor("#1f2328"))
-    pal.setColor(QPalette.ColorRole.Highlight, QColor("#334155"))
-    pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
-    pal.setColor(QPalette.ColorRole.PlaceholderText, QColor("#9ca3af"))
+    pal.setColor(QPalette.ColorRole.Window, QColor("#000000"))
+    pal.setColor(QPalette.ColorRole.Window, QColor("#21232c"))
+    pal.setColor(QPalette.ColorRole.Base, QColor("#21232c"))
     app.setPalette(pal)
 
 
@@ -81,7 +74,7 @@ def main():
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(str(resource_path("qss", "icons", "icon.ico"))))
     app.setStyle("Fusion")
-    apply_light_palette(app)
+    apply_palette(app)
     load_qss(app)
     window = MainWindow(settings_path=app_path("settings.json"))
     window.show()

@@ -9,47 +9,51 @@ from core.vision.novel_detector import SplitPart
 from core.ocr import OCRParagraph, is_scene_break_text
 
 
+_SOURCE_CONFIG_KEYS = (
+    "split_enabled", "split_skip_first", "split_only_wide", "split_large_images", "read_direction",
+    "remove_text_header", "header_cut_mode", "header_top_pct", "footer_bottom_pct", "crop_illustrations",
+    "trim_enabled", "trim_top", "trim_bottom", "trim_left", "trim_right", "trim_padding", "white_threshold",
+    "small_illust_enabled", "trim_before_illust_detect", "illust_sensitivity", "gemini_model", "ocr_language", "ocr_orientation",
+)
+_SOURCE_MAP_KEYS = ("classification_overrides", "illust_trim_overrides", "illust_side_crops", "illust_no_merge", "no_auto_separate")
+
+
+def _setting(settings, key, default=None):
+    return settings.get(key, default) if isinstance(settings, dict) else getattr(settings, key, default)
+
+
+def build_source_config(settings) -> dict:
+    config = {key: _setting(settings, key) for key in _SOURCE_CONFIG_KEYS}
+    config.update({key: dict(_setting(settings, key, {}) or {}) for key in _SOURCE_MAP_KEYS})
+    return config
+
+
+def build_source_key(settings, source_name, part_index, part, trim_override=None, fingerprint=None, side_crop=None) -> str:
+    default_trim = False if getattr(part, "is_mini_illust", False) else bool(_setting(settings, "trim_enabled", True))
+    effective_trim = default_trim if trim_override is None else bool(trim_override)
+    fp = fingerprint or part.fingerprint or image_fingerprint(part.image)
+    payload = (
+        9, source_name, part_index, fp, bool(part.is_illustration), bool(part.header_cut_applied),
+        bool(getattr(part, "is_mini_illust", False)), bool(_setting(settings, "remove_text_header", True)),
+        str(_setting(settings, "header_cut_mode", "auto")), float(_setting(settings, "header_top_pct", 6.0)),
+        effective_trim, bool(_setting(settings, "trim_top", True)), bool(_setting(settings, "trim_bottom", True)),
+        bool(_setting(settings, "trim_left", True)), bool(_setting(settings, "trim_right", True)),
+        int(_setting(settings, "trim_padding", 1)), int(_setting(settings, "white_threshold", 240)),
+        bool(_setting(settings, "small_illust_enabled", True)), bool(_setting(settings, "trim_before_illust_detect", True)),
+        bool(_setting(settings, "crop_illustrations", False)), str(_setting(settings, "illust_sensitivity", "normal")),
+        str(_setting(settings, "gemini_model", "gemini-3.1-flash-lite")), str(_setting(settings, "ocr_language", "ja")),
+        str(_setting(settings, "ocr_orientation", "vertical")),
+        (round(float(side_crop[0]), 1), round(float(side_crop[1]), 1)) if side_crop and len(side_crop) == 2 else (0.0, 0.0),
+    )
+    return hashlib.sha256(repr(payload).encode("utf-8")).hexdigest()
+
+
 class EntryMixin():
-    def _source_key(
-        self,
-        source_name: str,
-        part_index: int,
-        part: SplitPart,
-        trim_override: Optional[bool] = None,
-        fingerprint: Optional[str] = None,
-        side_crop: Optional[tuple] = None,
-    ) -> str:
-        default_trim = False if getattr(part, "is_mini_illust", False) else self.opts.trim_enabled
-        effective_trim = default_trim if trim_override is None else bool(trim_override)
-        fp = fingerprint or part.fingerprint or image_fingerprint(part.image)
-        payload = (
-            9,
-            source_name,
-            part_index,
-            fp,
-            bool(part.is_illustration),
-            bool(part.header_cut_applied),
-            bool(getattr(part, "is_mini_illust", False)),
-            self.opts.remove_text_header,
-            self.opts.header_cut_mode,
-            self.opts.header_top_pct,
-            effective_trim,
-            self.opts.trim_top,
-            self.opts.trim_bottom,
-            self.opts.trim_left,
-            self.opts.trim_right,
-            self.opts.trim_padding,
-            self.opts.white_threshold,
-            self.opts.small_illust_enabled,
-            self.opts.trim_before_illust_detect,
-            self.opts.crop_illustrations,
-            self.opts.illust_sensitivity,
-            self.opts.gemini_model,
-            self.opts.ocr_language,
-            self.opts.ocr_orientation,
-            (round(float(side_crop[0]), 1), round(float(side_crop[1]), 1)) if side_crop and len(side_crop) == 2 else (0.0, 0.0),
-        )
-        return hashlib.sha256(repr(payload).encode("utf-8")).hexdigest()
+    def _source_key(self, source_name, part_index, part, trim_override=None, fingerprint=None, side_crop=None) -> str:
+        return build_source_key(self.opts, source_name, part_index, part, trim_override, fingerprint, side_crop)
+
+    def _source_config(self) -> dict:
+        return build_source_config(self.opts)
 
     @staticmethod
     def _paragraphs_to_editable_text(paragraphs: List[OCRParagraph]) -> str:
@@ -104,6 +108,7 @@ class EntryMixin():
             "page_fingerprint": fp,
             "paragraphs": paragraphs,
             "ocr_error": ocr_error,
+            "source_config": self._source_config(),
         }
 
     def _make_illustration_entry(
@@ -146,6 +151,7 @@ class EntryMixin():
                 "image_size": img_size,
                 "reason": reason or part.analysis_reason,
                 "is_cover": page_no == 1,
+                "source_config": self._source_config(),
             }
         return {
             "type": "illustration",
@@ -158,4 +164,5 @@ class EntryMixin():
             "image_size": img_size,
             "reason": reason or part.analysis_reason,
             "is_cover": page_no == 1,
+            "source_config": self._source_config(),
         }
