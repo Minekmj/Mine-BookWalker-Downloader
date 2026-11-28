@@ -12,7 +12,7 @@ from core.ocr import OCRParagraph, is_scene_break_text
 _SOURCE_CONFIG_KEYS = (
     "split_enabled", "split_skip_first", "split_only_wide", "split_large_images", "read_direction",
     "remove_text_header", "header_cut_mode", "header_top_pct", "footer_bottom_pct", "crop_illustrations",
-    "trim_enabled", "trim_top", "trim_bottom", "trim_left", "trim_right", "trim_padding", "white_threshold",
+    "trim_enabled", "trim_top", "trim_bottom", "trim_left", "trim_right", "trim_padding", "trim_extra_px", "white_threshold",
     "small_illust_enabled", "trim_before_illust_detect", "illust_sensitivity", "gemini_model", "ocr_language", "ocr_orientation",
 )
 _SOURCE_MAP_KEYS = ("classification_overrides", "illust_trim_overrides", "illust_side_crops", "illust_no_merge", "no_auto_separate")

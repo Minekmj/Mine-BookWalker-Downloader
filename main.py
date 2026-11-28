@@ -1,9 +1,10 @@
 import sys
 from pathlib import Path
+import time
 
 from PySide6.QtCore import QDir, QPointF, Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPen, QPixmap
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QSplashScreen
 
 from path_clean import app_path, get_app_dir, get_resource_dir, resource_path
 
@@ -71,12 +72,22 @@ def load_qss(app: QApplication):
 
 def main():
     ensure_app_dirs()
+    
     app = QApplication(sys.argv)
+    
+    splash_pix = QPixmap(resource_path("qss", "icons", "splash.png"))
+    splash = QSplashScreen(splash_pix, Qt.WindowType.WindowStaysOnTopHint)
+    
+    splash.show()
+        
     app.setWindowIcon(QIcon(str(resource_path("qss", "icons", "icon.ico"))))
     app.setStyle("Fusion")
     apply_palette(app)
     load_qss(app)
     window = MainWindow(settings_path=app_path("settings.json"))
+    
+    splash.close()
+    
     window.show()
     sys.exit(app.exec())
 

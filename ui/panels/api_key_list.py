@@ -24,18 +24,13 @@ class ApiKeyChip(QFrame):
     def __init__(self, index: int, key: str, on_remove, parent=None):
         super().__init__(parent)
         self.setObjectName("keyChip")
-        self.setStyleSheet(
-            "QFrame#keyChip { background-color: #f9fafb; border: 1px solid #e5e7eb; border-radius: 4px; }"
-            "QLabel { background: transparent; border: none; color: #1f2328; }"
-        )
         row = QHBoxLayout(self)
         row.setContentsMargins(12, 6, 6, 6)
         row.setSpacing(8)
 
         number = QLabel(f"#{index}")
-        number.setStyleSheet("color: #6b7280; font-weight: 700;")
         value = QLabel(mask_key(key))
-        value.setStyleSheet("font-family: Consolas, monospace; color: #1f2328;")
+        value.setStyleSheet("font-family: Consolas, monospace;")
         value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         value.setToolTip(key)
 

@@ -37,15 +37,8 @@ class MainWindow(QMainWindow):
         save_app_settings(self.settings_path, self.app_settings)
 
     def closeEvent(self, event):
-        worker = getattr(self.tab_convert, "_analysis_worker", None)
-        if worker is not None:
-            try:
-                if isValid(worker):
-                    worker.cancel()
-                    worker.wait(1000)
-            except RuntimeError:
-                pass
-            self.tab_convert._analysis_worker = None
+        if hasattr(self.tab_convert, "shutdown_preview_workers"):
+            self.tab_convert.shutdown_preview_workers()
         cleanup_session_tmp()
         self._save_settings()
         super().closeEvent(event)

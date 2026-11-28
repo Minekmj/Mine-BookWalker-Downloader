@@ -36,6 +36,7 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "illust_sensitivity": "sensitive",
     "trim_enabled": True,
     "trim_padding": 0,
+    "trim_extra_px": 0,
     "small_illust_enabled": True,
     "trim_before_illust_detect": True,
     "remove_text_header": True,

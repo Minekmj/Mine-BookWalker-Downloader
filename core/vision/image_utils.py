@@ -5,6 +5,7 @@ import zlib
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 from PIL import Image, ImageOps
 
 from core.vision.fast_detector import (
@@ -111,6 +112,59 @@ def has_center_gutter(img: Image.Image, white_threshold: int = 235) -> bool:
     return fast_has_center_gutter(img, white_threshold=white_threshold)
 
 
+def _shave_residual_white_edges(
+    img: Image.Image,
+    trim_top: bool,
+    trim_bottom: bool,
+    trim_left: bool,
+    trim_right: bool,
+    white_threshold: int,
+    max_shave: int = 24,
+) -> Image.Image:
+    arr = np.asarray(img if img.mode == "RGB" else img.convert("RGB"))
+    h, w = arr.shape[:2]
+    if h < 10 or w < 10:
+        return img
+    edge_th = max(180, int(white_threshold) - 10)
+    is_white = np.min(arr, axis=2) >= edge_th
+    x1, y1, x2, y2 = 0, 0, w, h
+
+    if trim_top:
+        limit = min(max_shave, h - 10)
+        for _ in range(limit):
+            if float(np.mean(is_white[y1, x1:x2])) >= 0.975:
+                y1 += 1
+            else:
+                break
+    if trim_bottom:
+        limit = min(max_shave, (y2 - y1) - 10)
+        for _ in range(limit):
+            if float(np.mean(is_white[y2 - 1, x1:x2])) >= 0.975:
+                y2 -= 1
+            else:
+                break
+    if trim_left:
+        limit = min(max_shave, (x2 - x1) - 10)
+        for _ in range(limit):
+            if float(np.mean(is_white[y1:y2, x1])) >= 0.975:
+                x1 += 1
+            else:
+                break
+    if trim_right:
+        limit = min(max_shave, (x2 - x1) - 10)
+        for _ in range(limit):
+            if float(np.mean(is_white[y1:y2, x2 - 1])) >= 0.975:
+                x2 -= 1
+            else:
+                break
+
+    if x1 == 0 and y1 == 0 and x2 == w and y2 == h:
+        return img
+    if x2 - x1 < 10 or y2 - y1 < 10:
+        return img
+    return img.crop((x1, y1, x2, y2))
+
+
 def trim_white_margins(
     img: Image.Image,
     trim_top: bool = True,
@@ -120,6 +174,7 @@ def trim_white_margins(
     white_threshold: int = 240,
     noise_ratio: float = 0.0015,
     padding: int = 1,
+    extra_px: int = 0,
 ) -> Image.Image:
     w, h = img.size
     if h < 10 or w < 10:
@@ -129,11 +184,33 @@ def trim_white_margins(
     y1 = by1 if trim_top else 0
     x2 = bx2 if trim_right else w
     y2 = by2 if trim_bottom else h
-    if x1 == 0 and y1 == 0 and x2 == w and y2 == h:
-        return img
     if x2 - x1 < 10 or y2 - y1 < 10:
-        return img
-    return img.crop((x1, y1, x2, y2))
+        out = img
+    elif x1 == 0 and y1 == 0 and x2 == w and y2 == h:
+        out = img
+    else:
+        out = img.crop((x1, y1, x2, y2))
+
+    if padding <= 0:
+        out = _shave_residual_white_edges(
+            out,
+            trim_top=trim_top,
+            trim_bottom=trim_bottom,
+            trim_left=trim_left,
+            trim_right=trim_right,
+            white_threshold=white_threshold,
+        )
+
+    ex = max(0, int(extra_px))
+    if ex > 0:
+        ow, oh = out.size
+        nx1 = ex if trim_left else 0
+        ny1 = ex if trim_top else 0
+        nx2 = (ow - ex) if trim_right else ow
+        ny2 = (oh - ex) if trim_bottom else oh
+        if nx2 - nx1 >= 10 and ny2 - ny1 >= 10:
+            out = out.crop((nx1, ny1, nx2, ny2))
+    return out
 
 
 def crop_top_bottom_pct(

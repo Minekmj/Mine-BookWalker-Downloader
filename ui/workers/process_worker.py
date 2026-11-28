@@ -89,6 +89,7 @@ class ProcessWorker(EntryMixin, NovelMixin, ReviewMixin, QThread):
             "trim_right": self.opts.trim_right,
             "white_threshold": self.opts.white_threshold,
             "trim_padding": self.opts.trim_padding,
+            "trim_extra_px": self.opts.trim_extra_px,
         }
 
     def run(self):

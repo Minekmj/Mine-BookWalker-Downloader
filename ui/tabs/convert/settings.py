@@ -4,10 +4,10 @@ from typing import Dict
 from PySide6.QtWidgets import QFileDialog, QLabel
 
 from core.vision.image_utils import image_fingerprint, list_images_in_folder
-from core.vision.mode_detector import detect_folder_mode
 from core.vision.novel_detector import SplitPart
 from core.config.paths import OUT_IMG
 from ui.dialogs.settings_dialog import AdvancedSettingsDialog
+from ui.workers.preview_worker import FolderModeWorker
 
 
 class SettingsMixin():
@@ -23,25 +23,56 @@ class SettingsMixin():
             return
         self.input_edit.setText(folder)
         in_path = Path(folder)
-        self._preview_files = list_images_in_folder(in_path)
         self.book_title_edit.setText(in_path.name)
-        self._auto_select_mode()
-        self._restart_analysis()
-
+        self._cancel_worker_attr("_analysis_worker")
+        self._cancel_worker_attr("_preview_worker")
+        self._cancel_worker_attr("_preview_search_worker")
+        self._cancel_worker_attr("_folder_mode_worker")
+        self._analysis_cache = {}
+        self._analysis_cache_key = None
+        self._last_resolved_file_idx = -1
+        self._last_resolved_parts = []
         self._cur_file_idx = 0
         self._cur_sub_idx = 0
-        self._refresh_preview()
+        self._folder_mode_req_id = getattr(self, "_folder_mode_req_id", 0) + 1
+        req_id = self._folder_mode_req_id
+        self._set_status_label(self.lbl_preview_type, "statusMute", "폴더 이미지 및 형식 분석 중…")
+        worker = FolderModeWorker(
+            req_id,
+            in_path,
+            str(self.adv.get("illust_sensitivity", "normal")),
+            self,
+        )
+        worker.completed.connect(self._on_folder_mode_detected)
+        self._track_bg_worker(worker)
+        self._folder_mode_worker = worker
+        worker.start()
 
-    def _auto_select_mode(self):
-        if not self._preview_files:
+    def _on_folder_mode_detected(self, req_id: int, folder_str: str, files: list, mode: str):
+        if req_id != getattr(self, "_folder_mode_req_id", 0):
             return
-        mode, _, _, _ = detect_folder_mode(self._preview_files, str(self.adv.get("illust_sensitivity", "normal")))
-        if mode == "novel":
-            target = "novel"
-        else:
-            current = str(self.format_combo.currentData())
-            target = current if current.startswith("manga") else "manga_pdf"
-        self.format_combo.setCurrentIndex(self.format_combo.findData(target))
+        cur_input = self.input_edit.text().strip()
+        if not cur_input or Path(cur_input) != Path(folder_str):
+            return
+        self._preview_files = list(files)
+        self._cur_file_idx = 0
+        self._cur_sub_idx = 0
+        self._last_resolved_file_idx = -1
+        self._last_resolved_parts = []
+        self._analysis_cache = {}
+        self._analysis_cache_key = None
+        if self._preview_files:
+            if mode == "novel":
+                target = "novel"
+            else:
+                current = str(self.format_combo.currentData())
+                target = current if current.startswith("manga") else "manga_pdf"
+            idx = self.format_combo.findData(target)
+            if idx >= 0 and idx != self.format_combo.currentIndex():
+                self.format_combo.setCurrentIndex(idx)
+                return
+        self._restart_analysis()
+        self._refresh_preview()
 
     def _open_advanced_settings(self, initial_tab: int = 1):
         dlg = AdvancedSettingsDialog(self.collect_settings(), parent=self, initial_tab=initial_tab)

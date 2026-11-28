@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -246,35 +247,10 @@ class LayoutMixin():
     def _build_preview_group(self) -> QGroupBox:
         box = QGroupBox("미리보기")
         v = QVBoxLayout(box)
-        v.setSpacing(8)
-
-        nav = QHBoxLayout()
-        self.btn_prev_page = QPushButton("◀")
-        self.btn_prev_page.clicked.connect(self._prev_preview_page)
-
-        self.spin_page_input = QSpinBox()
-        self.spin_page_input.setRange(0, 0)
-        self.spin_page_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.spin_page_input.valueChanged.connect(self._on_page_spin_changed)
-
-        self.lbl_total_pages = QLabel("/ 0")
-
-        self.btn_next_page = QPushButton("▶")
-        self.btn_next_page.clicked.connect(self._next_preview_page)
-
-        self.btn_find_text = QPushButton("다음 본문")
-        self.btn_find_text.clicked.connect(self._find_next_text_page)
-        self.btn_next_illustration = QPushButton("다음 삽화")
-        self.btn_next_illustration.clicked.connect(self._find_next_illustration)
-        nav.addWidget(self.btn_prev_page)
-        nav.addWidget(self.spin_page_input)
-        nav.addWidget(self.lbl_total_pages)
-        nav.addWidget(self.btn_next_page)
-        nav.addWidget(self.btn_find_text)
-        nav.addWidget(self.btn_next_illustration)
-        v.addLayout(nav)
+        v.setSpacing(6)
 
         preview_opts = QHBoxLayout()
+        preview_opts.setSpacing(8)
         self.chk_preview_illustration = QCheckBox("현재 페이지를 삽화로 취급")
         self.chk_preview_illustration.toggled.connect(self._on_preview_illustration_toggled)
         self.chk_preview_illust_trim = QCheckBox("이 삽화 여백 제거")
@@ -309,9 +285,94 @@ class LayoutMixin():
         self.lbl_preview_type.setObjectName("statusMute")
         v.addWidget(self.lbl_preview_type)
 
+        preview_container = QWidget()
+        container_grid = QGridLayout(preview_container)
+        container_grid.setContentsMargins(0, 0, 0, 0)
+        container_grid.setSpacing(0)
+
         self.preview_widget = CutlinePreviewWidget()
         self.preview_widget.cutlineChanged.connect(self._on_preview_cutline_dragged)
         self.preview_widget.sideCropChanged.connect(self._on_preview_side_crop_dragged)
         self.preview_widget.wheelPageChanged.connect(self._on_preview_wheel)
-        v.addWidget(self.preview_widget, 1)
+        container_grid.addWidget(self.preview_widget, 0, 0)
+
+        nav_holder = QWidget()
+        nav_holder_layout = QVBoxLayout(nav_holder)
+        nav_holder_layout.setContentsMargins(12, 0, 12, 14)
+        nav_holder_layout.setSpacing(0)
+
+        self.floating_nav = QFrame()
+        self.floating_nav.setObjectName("floatingPreviewNav")
+        self.floating_nav.setStyleSheet(
+            "#floatingPreviewNav {"
+            "  background-color: rgba(24, 26, 34, 228);"
+            "  border: 1px solid rgba(255, 255, 255, 36);"
+            "  border-radius: 18px;"
+            "}"
+            "#floatingPreviewNav QPushButton {"
+            "  min-height: 26px;"
+            "  padding: 2px 10px;"
+            "  border-radius: 13px;"
+            "}"
+            "#floatingPreviewNav QSpinBox {"
+            "  min-height: 26px;"
+            "  padding: 0px 6px;"
+            "  margin: 0px;"
+            "  color: #f1f5f9;"
+            "  background-color: #2c2f3b;"
+            "  border: 1px solid rgba(255, 255, 255, 45);"
+            "  border-radius: 8px;"
+            "}"
+            "#floatingPreviewNav QLabel {"
+            "  color: #e2e8f0;"
+            "  background: transparent;"
+            "}"
+        )
+        nav = QHBoxLayout(self.floating_nav)
+        nav.setContentsMargins(10, 5, 10, 5)
+        nav.setSpacing(6)
+
+        self.btn_prev_page = QPushButton("◀")
+        self.btn_prev_page.setFixedWidth(34)
+        self.btn_prev_page.clicked.connect(self._prev_preview_page)
+
+        self.spin_page_input = QSpinBox()
+        self.spin_page_input.setRange(0, 0)
+        self.spin_page_input.setFixedWidth(78)
+        self.spin_page_input.setFixedHeight(28)
+        self.spin_page_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.spin_page_input.lineEdit().setStyleSheet(
+            "padding: 0px; margin: 0px; border: none; background: transparent; color: #f1f5f9;"
+        )
+        self.spin_page_input.valueChanged.connect(self._on_page_spin_changed)
+
+        self.lbl_total_pages = QLabel("/ 0")
+
+        self.btn_next_page = QPushButton("▶")
+        self.btn_next_page.setFixedWidth(34)
+        self.btn_next_page.clicked.connect(self._next_preview_page)
+
+        self.btn_find_text = QPushButton("다음 본문")
+        self.btn_find_text.clicked.connect(self._find_next_text_page)
+        self.btn_next_illustration = QPushButton("다음 삽화")
+        self.btn_next_illustration.clicked.connect(self._find_next_illustration)
+
+        nav.addWidget(self.btn_prev_page)
+        nav.addWidget(self.spin_page_input)
+        nav.addWidget(self.lbl_total_pages)
+        nav.addWidget(self.btn_next_page)
+        nav.addSpacing(4)
+        nav.addWidget(self.btn_find_text)
+        nav.addWidget(self.btn_next_illustration)
+
+        nav_holder_layout.addWidget(self.floating_nav)
+        container_grid.addWidget(
+            nav_holder,
+            0,
+            0,
+            Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignHCenter,
+        )
+        nav_holder.raise_()
+
+        v.addWidget(preview_container, 1)
         return box

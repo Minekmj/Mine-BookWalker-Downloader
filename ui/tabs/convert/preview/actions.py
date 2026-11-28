@@ -3,10 +3,10 @@ from typing import Dict
 
 from PySide6.QtWidgets import QMessageBox
 
-from core.vision.image_utils import detect_illustration_bounds, load_image_rgb
 from core.vision.novel_detector import SplitPart
 from core.vision.page_pipeline import default_illust_trim_enabled
 from ui.dialogs.cover_crop_dialog import CoverCropDialog
+from ui.workers.preview_worker import CoverCropWorker
 
 
 class PreviewActionsMixin:
@@ -29,6 +29,7 @@ class PreviewActionsMixin:
             "trim_right": bool(self.adv.get("trim_right", True)),
             "white_threshold": int(self.adv.get("white_threshold", 240)),
             "trim_padding": int(self.adv.get("trim_padding", 1)),
+            "trim_extra_px": int(self.adv.get("trim_extra_px", 0)),
         }
 
     def _analysis_params(self) -> Dict:
@@ -51,17 +52,22 @@ class PreviewActionsMixin:
         }
 
     def _params_key(self) -> str:
-        return json.dumps({"novel": self._is_novel(), "no_auto_separate": self._no_auto_separate, **self._analysis_params()}, sort_keys=True)
+        return json.dumps({"input_dir": self.input_edit.text().strip(), "novel": self._is_novel(), "no_auto_separate": self._no_auto_separate, **self._analysis_params()}, sort_keys=True)
+
+    def _current_resolved_parts(self):
+        if getattr(self, "_last_resolved_file_idx", -1) == self._cur_file_idx and getattr(self, "_last_resolved_parts", None):
+            return self._last_resolved_parts
+        return getattr(self, "_analysis_cache", {}).get(self._cur_file_idx)
 
     def _on_preview_illustration_toggled(self, checked: bool):
         if not self._preview_files or not self._is_novel():
             return
-        parts = self._resolve_file_parts(self._cur_file_idx)
-        if self._cur_sub_idx >= len(parts):
+        parts = self._current_resolved_parts()
+        if not parts or self._cur_sub_idx < 0 or self._cur_sub_idx >= len(parts):
             return
         part = parts[self._cur_sub_idx]
         if part.split_note == "양면 삽화 병합" and not checked:
-            base_parts = self._base_parts(self._cur_file_idx)
+            base_parts = getattr(self, "_analysis_cache", {}).get(self._cur_file_idx) or parts
             removed = False
             for idx, bp in enumerate(base_parts):
                 bkey = self._classification_key(self._cur_file_idx, idx, bp)
@@ -88,7 +94,6 @@ class PreviewActionsMixin:
         self.settingsChanged.emit()
         self._refresh_preview()
 
-
     def _on_preview_merge_clicked(self):
         if not self._preview_files or not self._is_novel():
             return
@@ -103,8 +108,8 @@ class PreviewActionsMixin:
     def _on_preview_illust_trim_toggled(self, checked: bool):
         if not self._preview_files or not self._is_novel():
             return
-        parts = self._resolve_file_parts(self._cur_file_idx)
-        if self._cur_sub_idx >= len(parts):
+        parts = self._current_resolved_parts()
+        if not parts or self._cur_sub_idx < 0 or self._cur_sub_idx >= len(parts):
             return
         part = parts[self._cur_sub_idx]
         key = self._classification_key(self._cur_file_idx, self._cur_sub_idx, part)
@@ -113,14 +118,43 @@ class PreviewActionsMixin:
         self.settingsChanged.emit()
         self._refresh_preview()
 
-    def _select_cover_crop(self):
-        if not self._preview_files:
-            QMessageBox.warning(self, "안내", "먼저 만화 이미지 폴더를 선택하세요.")
+    def _start_cover_crop_worker(self, action_mode: str):
+        self._cover_crop_req_id = getattr(self, "_cover_crop_req_id", 0) + 1
+        req_id = self._cover_crop_req_id
+        self._cancel_worker_attr("_cover_crop_worker")
+        worker = CoverCropWorker(req_id, action_mode, self._preview_files[0], self)
+        worker.completed.connect(self._on_cover_crop_worker_completed)
+        self._track_bg_worker(worker)
+        self._cover_crop_worker = worker
+        worker.start()
+
+    def _on_cover_crop_worker_completed(self, req_id: int, action_mode: str, image, bounds):
+        if req_id != getattr(self, "_cover_crop_req_id", 0):
             return
-        image = load_image_rgb(self._preview_files[0])
-        dialog = CoverCropDialog(image, self)
-        if dialog.exec():
-            self._cover_crop_rect = tuple(dialog.selected_rect)
+        if not self._preview_files or image is None:
+            return
+        if action_mode == "select":
+            dialog = CoverCropDialog(image, self)
+            if dialog.exec():
+                self._cover_crop_rect = tuple(dialog.selected_rect)
+                self.chk_cover_crop.blockSignals(True)
+                self.chk_cover_crop.setChecked(True)
+                self.chk_cover_crop.blockSignals(False)
+                self.adv["cover_crop_enabled"] = True
+                self.adv["cover_crop_rect"] = list(self._cover_crop_rect)
+                self.settingsChanged.emit()
+                self._refresh_preview()
+            elif self.chk_cover_crop.isChecked() and not self._cover_crop_rect:
+                self.chk_cover_crop.blockSignals(True)
+                self.chk_cover_crop.setChecked(False)
+                self.chk_cover_crop.blockSignals(False)
+        elif action_mode == "auto":
+            if bounds is None or bounds == (0, 0, image.width, image.height):
+                self._refresh_preview()
+                QMessageBox.information(self, "자동 자르기", "표지 바깥 여백을 확실하게 감지하지 못했습니다. 직접 영역 선택을 사용하세요.")
+                return
+            x1, y1, x2, y2 = bounds
+            self._cover_crop_rect = (x1 / image.width, y1 / image.height, (x2 - x1) / image.width, (y2 - y1) / image.height)
             self.chk_cover_crop.blockSignals(True)
             self.chk_cover_crop.setChecked(True)
             self.chk_cover_crop.blockSignals(False)
@@ -129,34 +163,24 @@ class PreviewActionsMixin:
             self.settingsChanged.emit()
             self._refresh_preview()
 
+    def _select_cover_crop(self):
+        if not self._preview_files:
+            QMessageBox.warning(self, "안내", "먼저 만화 이미지 폴더를 선택하세요.")
+            return
+        self._start_cover_crop_worker("select")
+
     def _auto_cover_crop(self):
         if not self._preview_files:
             QMessageBox.warning(self, "안내", "먼저 만화 이미지 폴더를 선택하세요.")
             return
-        image = load_image_rgb(self._preview_files[0])
-        bounds = detect_illustration_bounds(image, padding_ratio=0.0)
-        x1, y1, x2, y2 = bounds
-        if bounds == (0, 0, image.width, image.height):
-            QMessageBox.information(self, "자동 자르기", "표지 바깥 여백을 확실하게 감지하지 못했습니다. 직접 영역 선택을 사용하세요.")
-            return
-        self._cover_crop_rect = (x1 / image.width, y1 / image.height, (x2 - x1) / image.width, (y2 - y1) / image.height)
-        self.chk_cover_crop.blockSignals(True)
-        self.chk_cover_crop.setChecked(True)
-        self.chk_cover_crop.blockSignals(False)
-        self.adv["cover_crop_enabled"] = True
-        self.adv["cover_crop_rect"] = list(self._cover_crop_rect)
-        self.settingsChanged.emit()
-        self._refresh_preview()
+        self._set_status_label(self.lbl_preview_type, "statusMute", "표지 여백 자동 감지 중…")
+        self._start_cover_crop_worker("auto")
 
     def _on_cover_crop_toggled(self, enabled: bool):
         self.btn_cover_crop.setEnabled(enabled and not self._is_novel())
         if enabled and not self._cover_crop_rect:
             self._select_cover_crop()
-            if not self._cover_crop_rect:
-                self.chk_cover_crop.blockSignals(True)
-                self.chk_cover_crop.setChecked(False)
-                self.chk_cover_crop.blockSignals(False)
-                return
+            return
         self.adv["cover_crop_enabled"] = bool(enabled)
         self.adv["cover_crop_rect"] = list(self._cover_crop_rect) if self._cover_crop_rect else None
         self.settingsChanged.emit()
@@ -171,8 +195,8 @@ class PreviewActionsMixin:
     def _on_preview_side_crop_toggled(self, checked: bool):
         if not self._preview_files or not self._is_novel():
             return
-        parts = self._resolve_file_parts(self._cur_file_idx)
-        if self._cur_sub_idx >= len(parts):
+        parts = self._current_resolved_parts()
+        if not parts or self._cur_sub_idx < 0 or self._cur_sub_idx >= len(parts):
             return
         part = parts[self._cur_sub_idx]
         key = part.side_crop_origin_key or self._classification_key(self._cur_file_idx, self._cur_sub_idx, part)
@@ -197,8 +221,8 @@ class PreviewActionsMixin:
     def _on_side_crop_apply(self):
         if not self._preview_files or not self._is_novel():
             return
-        parts = self._resolve_file_parts(self._cur_file_idx)
-        if self._cur_sub_idx >= len(parts):
+        parts = self._current_resolved_parts()
+        if not parts or self._cur_sub_idx < 0 or self._cur_sub_idx >= len(parts):
             return
         part = parts[self._cur_sub_idx]
         key = self._classification_key(self._cur_file_idx, self._cur_sub_idx, part)
@@ -217,8 +241,8 @@ class PreviewActionsMixin:
     def _on_side_crop_cancel(self):
         if not self._preview_files or not self._is_novel():
             return
-        parts = self._resolve_file_parts(self._cur_file_idx)
-        if self._cur_sub_idx >= len(parts):
+        parts = self._current_resolved_parts()
+        if not parts or self._cur_sub_idx < 0 or self._cur_sub_idx >= len(parts):
             return
         part = parts[self._cur_sub_idx]
         key = part.side_crop_origin_key or self._classification_key(self._cur_file_idx, self._cur_sub_idx, part)

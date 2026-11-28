@@ -21,6 +21,17 @@ class ConvertTab(LayoutMixin, PreviewMixin, SettingsMixin, RunMixin, QWidget):
         self._preview_files: List[Path] = []
         self._cur_file_idx: int = 0
         self._cur_sub_idx: int = 0
+        self._preview_req_id: int = 0
+        self._preview_worker = None
+        self._preview_search_req_id: int = 0
+        self._preview_search_worker = None
+        self._folder_mode_req_id: int = 0
+        self._folder_mode_worker = None
+        self._cover_crop_req_id: int = 0
+        self._cover_crop_worker = None
+        self._last_resolved_file_idx: int = -1
+        self._last_resolved_parts = []
+        self._bg_workers = set()
         self._classification_overrides = dict(self.adv.get("classification_overrides", {}) or {})
         self._illust_trim_overrides = dict(self.adv.get("illust_trim_overrides", {}) or {})
         self._illust_side_crops = dict(self.adv.get("illust_side_crops", {}) or {})

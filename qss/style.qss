@@ -90,35 +90,30 @@ QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabl
 
 QSpinBox, QDoubleSpinBox {
   padding-right: 20px;
+  text-align: center;
 }
 
 QSpinBox::up-button, QDoubleSpinBox::up-button {
   subcontrol-origin: border;
   subcontrol-position: top right;
-  width: 18px;
-  background-color: #2a2d38;
-  border-left: 1px solid #323542;
+  width: 0px;
+  background-color: transparent;
+  border-left: 1px solid transparent;
 }
 
 QSpinBox::down-button, QDoubleSpinBox::down-button {
   subcontrol-origin: border;
   subcontrol-position: bottom right;
-  width: 18px;
-  background-color: #2a2d38;
-  border-left: 1px solid #323542;
-  border-top: 1px solid #323542;
+  width: 0px;
+  background-color: transparent;
+  border-left: 1px solid transparent;
+  border-top: 1px solid transparent;
 }
 
-QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
-  image: url(icons:arrow_up.png);
-  width: 9px;
-  height: 9px;
-}
-
-QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
-  image: url(icons:arrow_down.png);
-  width: 9px;
-  height: 9px;
+QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::down-arrow, QDoubleSpinBox::up-arrow {
+  width: 0px;
+  height: 0px;
+  border: none;
 }
 
 QComboBox::drop-down {

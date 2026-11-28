@@ -46,6 +46,14 @@ class CutlinePreviewWidget(QWidget):
         self._side_dragging = None
         self.update()
 
+    def set_qimage(self, qimg: Optional[QImage], edit_qimg: Optional[QImage] = None):
+        self._pixmap = QPixmap.fromImage(qimg) if qimg is not None and not qimg.isNull() else None
+        self._edit_pixmap = QPixmap.fromImage(edit_qimg) if edit_qimg is not None and not edit_qimg.isNull() else None
+        self._hover_edit = False
+        self._dragging = False
+        self._side_dragging = None
+        self.update()
+
     def set_hover_only(self, enabled: bool):
         self._hover_only = bool(enabled)
         self._hover_edit = False

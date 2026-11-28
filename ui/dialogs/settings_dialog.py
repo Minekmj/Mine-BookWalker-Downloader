@@ -99,12 +99,18 @@ class AdvancedSettingsDialog(QDialog):
         self.spin_pad = QSpinBox()
         self.spin_pad.setRange(0, 200)
         self.spin_pad.setValue(int(settings.get("trim_padding", 1)))
+        self.spin_extra_crop = QSpinBox()
+        self.spin_extra_crop.setRange(0, 100)
+        self.spin_extra_crop.setSuffix(" px")
+        self.spin_extra_crop.setValue(int(settings.get("trim_extra_px", 0)))
         trim_layout.addWidget(QLabel("제거 방향"), 0, 0)
         trim_layout.addLayout(side_row, 0, 1, 1, 3)
         trim_layout.addWidget(QLabel("흰색 판정 기준"), 1, 0)
         trim_layout.addWidget(self.spin_white, 1, 1)
         trim_layout.addWidget(QLabel("여유 픽셀"), 1, 2)
         trim_layout.addWidget(self.spin_pad, 1, 3)
+        trim_layout.addWidget(QLabel("추가 자르기"), 2, 0)
+        trim_layout.addWidget(self.spin_extra_crop, 2, 1)
         self.trim_group = trim_group
         self.trim_group.setEnabled(settings.get("mode", "novel") != "manga")
         layout.addWidget(trim_group)
@@ -144,6 +150,7 @@ class AdvancedSettingsDialog(QDialog):
             "trim_right": self.chk_right.isChecked(),
             "white_threshold": self.spin_white.value(),
             "trim_padding": self.spin_pad.value(),
+            "trim_extra_px": self.spin_extra_crop.value(),
             "resume_from_backup": self.chk_resume.isChecked(),
             "make_epub": self.chk_make_epub.isChecked(),
             "save_txt_folder": self.chk_save_txt.isChecked(),

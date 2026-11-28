@@ -1,21 +1,20 @@
 import hashlib
 from pathlib import Path
 import shutil
-from typing import List
+from typing import Dict, List, Optional
 
 from PySide6.QtCore import QTimer
+from shiboken6 import isValid
 
 from core.config.paths import SESSION_TMP
-from core.vision.image_utils import (
-    crop_normalized_rect,
-    image_fingerprint,
-    is_blank_image,
-    load_image_rgb,
-    save_tmp_image,
-)
 from core.vision.novel_detector import SplitPart
-from core.vision.page_pipeline import compute_base_parts, split_illustration_side_crop
 from ui.workers.analysis_worker import PageAnalysisWorker
+from ui.workers.preview_worker import (
+    PreviewRenderWorker,
+    PreviewSearchWorker,
+    part_image,
+    part_is_blank,
+)
 
 
 class PreviewCacheMixin:
@@ -28,7 +27,7 @@ class PreviewCacheMixin:
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir
 
-    def _cleanup_preview_cache(self, keep_dir: Path = None):
+    def _cleanup_preview_cache(self, keep_dir: Optional[Path] = None):
         root = self._preview_cache_root()
         if not root.is_dir():
             return
@@ -42,74 +41,165 @@ class PreviewCacheMixin:
 
     @staticmethod
     def _part_image(part: SplitPart):
-        if part.image is not None:
-            return part.image
-        if part.image_path is not None and Path(part.image_path).is_file():
-            return load_image_rgb(Path(part.image_path))
-        return None
+        return part_image(part)
 
     def _part_is_blank(self, part: SplitPart) -> bool:
-        if part.is_blank is not None:
-            return bool(part.is_blank)
-        img = self._part_image(part)
-        if img is None:
-            return True
-        blank = is_blank_image(img)
-        part.is_blank = blank
-        return blank
+        return part_is_blank(part)
 
-    def _base_parts(self, file_idx: int) -> List[SplitPart]:
-        params_key = self._params_key()
+    def _ensure_analysis_cache(self, params_key: str) -> Path:
         cache_dir = self._preview_cache_dir(params_key)
-        if not hasattr(self, "_analysis_cache") or self._analysis_cache_key != params_key:
+        if not hasattr(self, "_analysis_cache") or getattr(self, "_analysis_cache_key", None) != params_key:
             self._analysis_cache = {}
             self._analysis_cache_key = params_key
             self._cleanup_preview_cache(keep_dir=cache_dir)
-        if file_idx in self._analysis_cache:
-            return self._analysis_cache[file_idx]
-        path = self._preview_files[file_idx]
-        img = load_image_rgb(path)
-        is_novel = self._is_novel()
-        if not is_novel and file_idx == 0 and self.chk_cover_crop.isChecked() and self._cover_crop_rect:
-            cropped = crop_normalized_rect(img, self._cover_crop_rect)
-            parts = [SplitPart(cropped, "첫 장 표지 영역 자르기", True, "사용자 지정 표지 영역")]
-        else:
-            params = self._analysis_params()
-            params["auto_separate_disabled"] = bool(self._no_auto_separate.get(path.name, False))
-            parts = compute_base_parts(img, file_idx == 0, is_novel, params)
-        cached_parts = []
-        for part_idx, part in enumerate(parts):
-            fp = part.fingerprint or image_fingerprint(part.image)
-            blank = part.is_blank if part.is_blank is not None else is_blank_image(part.image)
-            out_path = cache_dir / f"{file_idx:05d}_{part_idx:02d}.png"
-            save_tmp_image(part.image, out_path)
-            cached_parts.append(
-                SplitPart(
-                    None,
-                    part.split_note,
-                    part.is_illustration,
-                    part.analysis_reason,
-                    header_cut_applied=part.header_cut_applied,
-                    detected_header_cut_y=part.detected_header_cut_y,
-                    is_mini_illust=part.is_mini_illust,
-                    image_path=out_path,
-                    fingerprint=fp,
-                    is_blank=blank,
-                )
-            )
-        self._analysis_cache[file_idx] = cached_parts
-        return cached_parts
+        return cache_dir
+
+    def _track_bg_worker(self, worker):
+        if not hasattr(self, "_bg_workers"):
+            self._bg_workers = set()
+        self._bg_workers.add(worker)
+        worker.finished.connect(lambda w=worker: self._untrack_bg_worker(w))
+        worker.finished.connect(worker.deleteLater)
+
+    def _untrack_bg_worker(self, worker):
+        if hasattr(self, "_bg_workers"):
+            self._bg_workers.discard(worker)
+        if getattr(self, "_preview_worker", None) is worker:
+            self._preview_worker = None
+        if getattr(self, "_preview_search_worker", None) is worker:
+            self._preview_search_worker = None
+        if getattr(self, "_folder_mode_worker", None) is worker:
+            self._folder_mode_worker = None
+        if getattr(self, "_cover_crop_worker", None) is worker:
+            self._cover_crop_worker = None
+
+    def _cancel_worker_attr(self, attr_name: str):
+        old = getattr(self, attr_name, None)
+        if old is not None:
+            try:
+                if isValid(old):
+                    old.cancel()
+            except RuntimeError:
+                pass
+            setattr(self, attr_name, None)
+
+    def shutdown_preview_workers(self):
+        for timer_attr in ("_analysis_timer", "_preview_render_timer"):
+            timer = getattr(self, timer_attr, None)
+            if timer is not None:
+                try:
+                    timer.stop()
+                except RuntimeError:
+                    pass
+        for attr in ("_analysis_worker", "_preview_worker", "_preview_search_worker", "_folder_mode_worker", "_cover_crop_worker"):
+            self._cancel_worker_attr(attr)
+        for worker in list(getattr(self, "_bg_workers", ())):
+            try:
+                if isValid(worker):
+                    worker.cancel()
+                    worker.wait(500)
+            except RuntimeError:
+                pass
+
+    def _build_preview_snapshot(self, file_idx: int, sub_idx: int) -> Dict:
+        params_key = self._params_key()
+        cache_dir = self._ensure_analysis_cache(params_key)
+        return {
+            "file_idx": file_idx,
+            "sub_idx": sub_idx,
+            "file_path": self._preview_files[file_idx],
+            "is_novel": self._is_novel(),
+            "params_key": params_key,
+            "cache_dir": cache_dir,
+            "cached_base_parts": self._analysis_cache.get(file_idx),
+            "analysis_params": self._analysis_params(),
+            "render_params": self._render_params(),
+            "split_large_images": self.chk_split_large.isChecked(),
+            "cover_crop_enabled": self.chk_cover_crop.isChecked(),
+            "cover_crop_rect": self._cover_crop_rect,
+            "classification_overrides": dict(self._classification_overrides),
+            "illust_trim_overrides": dict(self._illust_trim_overrides),
+            "illust_side_crops": dict(self._illust_side_crops),
+            "illust_no_merge": dict(self._illust_no_merge),
+            "no_auto_separate": dict(self._no_auto_separate),
+            "side_crop_editing": bool(self._side_crop_editing),
+        }
+
+    def _schedule_preview_render(self, file_idx: int, sub_idx: int):
+        self._preview_req_id = getattr(self, "_preview_req_id", 0) + 1
+        self._cancel_worker_attr("_preview_worker")
+        self._pending_preview_req = (self._preview_req_id, self._build_preview_snapshot(file_idx, sub_idx))
+        if not hasattr(self, "_preview_render_timer"):
+            self._preview_render_timer = QTimer(self)
+            self._preview_render_timer.setSingleShot(True)
+            self._preview_render_timer.timeout.connect(self._start_preview_render)
+        self._preview_render_timer.start(20)
+
+    def _start_preview_render(self):
+        pending = getattr(self, "_pending_preview_req", None)
+        if not pending:
+            return
+        req_id, snapshot = pending
+        if req_id != getattr(self, "_preview_req_id", 0):
+            return
+        worker = PreviewRenderWorker(req_id, snapshot, self)
+        worker.rendered.connect(self._on_preview_rendered)
+        self._track_bg_worker(worker)
+        self._preview_worker = worker
+        worker.start()
+
+    def _start_preview_search(self, target_is_illustration: bool):
+        if not self._preview_files:
+            return
+        self._preview_search_req_id = getattr(self, "_preview_search_req_id", 0) + 1
+        req_id = self._preview_search_req_id
+        self._cancel_worker_attr("_preview_search_worker")
+
+        params_key = self._params_key()
+        cache_dir = self._ensure_analysis_cache(params_key)
+        snapshot = {
+            "params_key": params_key,
+            "cache_dir": cache_dir,
+            "cached_base_map": dict(self._analysis_cache),
+            "is_novel": self._is_novel(),
+            "analysis_params": self._analysis_params(),
+            "split_large_images": self.chk_split_large.isChecked(),
+            "cover_crop_enabled": self.chk_cover_crop.isChecked(),
+            "cover_crop_rect": self._cover_crop_rect,
+            "classification_overrides": dict(self._classification_overrides),
+            "illust_no_merge": dict(self._illust_no_merge),
+            "illust_side_crops": dict(self._illust_side_crops),
+            "no_auto_separate": dict(self._no_auto_separate),
+        }
+        label_text = "다음 삽화 찾는 중…" if target_is_illustration else "본문 텍스트 페이지 찾는 중…"
+        self._set_status_label(self.lbl_preview_type, "statusMute", label_text)
+
+        worker = PreviewSearchWorker(
+            req_id,
+            self._preview_files,
+            self._cur_file_idx,
+            max(0, self._cur_sub_idx),
+            target_is_illustration,
+            snapshot,
+            self,
+        )
+        worker.page_analyzed.connect(self._on_search_page_analyzed)
+        worker.found.connect(self._on_preview_search_found)
+        worker.not_found.connect(self._on_preview_search_not_found)
+        self._track_bg_worker(worker)
+        self._preview_search_worker = worker
+        worker.start()
+
+    def _on_search_page_analyzed(self, index: int, parts, params_key: str):
+        if getattr(self, "_analysis_cache_key", None) != params_key:
+            return
+        if index not in self._analysis_cache:
+            self._analysis_cache[index] = parts
 
     def _restart_analysis(self):
         if not self._preview_files or not self._is_novel():
             return
-        old = getattr(self, "_analysis_worker", None)
-        if old is not None:
-            try:
-                old.cancel()
-            except RuntimeError:
-                pass
-            self._analysis_worker = None
+        self._cancel_worker_attr("_analysis_worker")
         params_key = self._params_key()
         cache_dir = self._preview_cache_dir(params_key)
         self._analysis_cache = {}
@@ -143,85 +233,7 @@ class PreviewCacheMixin:
     def _on_page_analyzed(self, index: int, parts):
         if getattr(self, "_analysis_cache_key", None) != self._params_key():
             return
+        already_cached = index in self._analysis_cache
         self._analysis_cache[index] = parts
-        if index == self._cur_file_idx:
+        if index == self._cur_file_idx and not already_cached:
             self._refresh_preview()
-
-    def _resolve_file_parts(self, file_idx: int) -> List[SplitPart]:
-        parts = self._base_parts(file_idx)
-        overrides = []
-        for part_index, part in enumerate(parts):
-            key = self._classification_key(file_idx, part_index, part)
-            if key in self._classification_overrides:
-                value = bool(self._classification_overrides[key])
-                part = SplitPart(
-                    part.image,
-                    part.split_note,
-                    value,
-                    "사용자 지정 삽화" if value else "사용자 지정 본문",
-                    header_cut_applied=part.header_cut_applied,
-                    detected_header_cut_y=part.detected_header_cut_y,
-                    is_mini_illust=part.is_mini_illust,
-                    image_path=part.image_path,
-                    fingerprint=part.fingerprint,
-                    is_blank=part.is_blank,
-                )
-            overrides.append(part)
-        fname = self._preview_files[file_idx].name
-        if self._is_novel() and not self.chk_split_large.isChecked() and not self._illust_no_merge.get(fname, False) and len(overrides) > 1:
-            non_blank = [p for p in overrides if not self._part_is_blank(p)]
-            if len(non_blank) >= 2 and all(p.is_illustration for p in non_blank):
-                raw_img = load_image_rgb(self._preview_files[file_idx])
-                fp = image_fingerprint(raw_img)
-                blank = is_blank_image(raw_img)
-                merged = SplitPart(
-                    raw_img,
-                    "양면 삽화 병합",
-                    True,
-                    "분리된 양면 삽화 자동 병합",
-                    header_cut_applied=False,
-                    fingerprint=fp,
-                    is_blank=blank,
-                )
-                merged_key = self._classification_key(file_idx, 0, merged)
-                if merged_key in self._classification_overrides:
-                    val = bool(self._classification_overrides[merged_key])
-                    merged.is_illustration = val
-                    merged.analysis_reason = "사용자 지정 삽화" if val else "사용자 지정 본문"
-                return self._apply_side_crops_to_parts(file_idx, [merged])
-        return self._apply_side_crops_to_parts(file_idx, overrides)
-
-    def _apply_side_crops_to_parts(self, file_idx: int, parts: List[SplitPart]) -> List[SplitPart]:
-        if not self._is_novel():
-            return parts
-        if getattr(self, "_side_crop_editing", False) and file_idx == self._cur_file_idx:
-            return parts
-        r_params = self._render_params()
-        expanded: List[SplitPart] = []
-        for idx, part in enumerate(parts):
-            key = self._classification_key(file_idx, idx, part)
-            sc = self._illust_side_crops.get(key)
-            if part.is_illustration and sc and len(sc) == 2 and (float(sc[0]) > 0.0 or float(sc[1]) > 0.0):
-                part_img = self._part_image(part)
-                if part_img is not None and not self._part_is_blank(part):
-                    src_part = SplitPart(
-                        part_img,
-                        part.split_note,
-                        part.is_illustration,
-                        part.analysis_reason,
-                        header_cut_applied=part.header_cut_applied,
-                        detected_header_cut_y=part.detected_header_cut_y,
-                        is_mini_illust=part.is_mini_illust,
-                    )
-                    split_parts = split_illustration_side_crop(
-                        src_part,
-                        side_crop=(float(sc[0]), float(sc[1])),
-                        origin_key=key,
-                    )
-                    for sp in split_parts:
-                        sp.fingerprint = image_fingerprint(sp.image)
-                        sp.is_blank = is_blank_image(sp.image)
-                    expanded.extend(split_parts)
-                    continue
-            expanded.append(part)
-        return expanded

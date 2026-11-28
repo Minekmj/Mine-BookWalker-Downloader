@@ -22,6 +22,7 @@ class ProcessOptions:
     trim_right: bool = True
     white_threshold: int = 240
     trim_padding: int = 1
+    trim_extra_px: int = 0
     small_illust_enabled: bool = True
     trim_before_illust_detect: bool = True
     remove_text_header: bool = True

@@ -78,6 +78,7 @@ def render_illustration_image(
             trim_right=bool(params.get("trim_right", True)),
             white_threshold=int(params.get("white_threshold", 240)),
             padding=int(params.get("trim_padding", 1)),
+            extra_px=int(params.get("trim_extra_px", 0)),
         )
     if side_crop and len(side_crop) == 2:
         image = crop_side_pct(image, float(side_crop[0]), float(side_crop[1]))
